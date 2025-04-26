@@ -1,0 +1,7 @@
+from google import genai
+# Create a client
+api_key = "XXXXX"
+client = genai.Client(api_key=api_key)
+ 
+# Define the model you are going to use
+model_id =  "gemini-2.0-flash" # or "gemini-2.0-flash-lite-preview-02-05"  , "gemini-2.0-pro-exp-02-05"
