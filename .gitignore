@@ -122,3 +122,6 @@ output/
 input_1/
 input_2/
 docs/
+app/data/*
+app/data/
+
