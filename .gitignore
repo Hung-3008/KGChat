@@ -124,4 +124,10 @@ input_2/
 docs/
 app/data/*
 app/data/
+app/dumps/*
+eval/**/*.csv
+eval/batches/*
+eval/data/*
+
+
 
