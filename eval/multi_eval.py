@@ -7,6 +7,9 @@ import sys
 import logging
 from pydantic import BaseModel, Field
 import asyncio
+import openpyxl
+from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 # Configure logging
 logging.basicConfig(
@@ -169,6 +172,51 @@ def ask_question(question, response_type="concise"):
         logger.error(f"Error querying API: {str(e)}")
         return f"Error: {str(e)}"
 
+def create_excel_with_formatting(df, output_path):
+    """
+    Create an Excel file with formatting from a DataFrame
+    """
+    # Create Excel writer and write DataFrame to it
+    writer = pd.ExcelWriter(output_path, engine='openpyxl')
+    df.to_excel(writer, index=False, sheet_name='Evaluation Results')
+    
+    # Access the workbook and worksheet objects
+    workbook = writer.book
+    worksheet = writer.sheets['Evaluation Results']
+    
+    # Define styles
+    header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True)
+    correct_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+    incorrect_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+    
+    # Set column widths
+    worksheet.column_dimensions['A'].width = 15  # Question column
+    worksheet.column_dimensions['B'].width = 25  # Correct answer column
+    worksheet.column_dimensions['C'].width = 25  # Model answer column
+    worksheet.column_dimensions['D'].width = 15  # Is correct column
+    
+    # Apply header formatting
+    for col_num, column_title in enumerate(df.columns, 1):
+        cell = worksheet.cell(row=1, column=col_num)
+        cell.fill = header_fill
+        cell.font = header_font
+        
+    # Apply conditional formatting to is_correct column
+    for row_num, value in enumerate(df['is_correct'], 2):  # Start from row 2 (after header)
+        cell = worksheet.cell(row=row_num, column=4)  # is_correct column
+        if value == 1:
+            cell.fill = correct_fill
+            cell.value = "1"
+        else:
+            cell.fill = incorrect_fill
+            cell.value = "0"
+    
+    # Save the workbook
+    writer.close()
+    
+    logger.info(f"Excel file created at {output_path} with formatting")
+
 async def process_dataset(dataset, gemini_client, key_manager, num_samples=None, batch_size=100, save_prefix='diabetes_mc_results'):
     """
     Process the dataset with built-in key rotation for API errors.
@@ -179,6 +227,9 @@ async def process_dataset(dataset, gemini_client, key_manager, num_samples=None,
     examples_to_process = min(total_examples, num_samples) if num_samples else total_examples
     
     logger.info(f"Starting processing of {examples_to_process} questions")
+    
+    # Create batches directory if it doesn't exist
+    os.makedirs("eval/batches", exist_ok=True)
     
     for i in range(examples_to_process):
         question = dataset['input'][i]
@@ -209,9 +260,10 @@ async def process_dataset(dataset, gemini_client, key_manager, num_samples=None,
         if (i + 1) % batch_size == 0 or i == examples_to_process - 1:
             batch_number = (i + 1) // batch_size if (i + 1) % batch_size == 0 else ((i + 1) // batch_size) + 1
             batch_df = pd.DataFrame(results)
-            batch_filename = f"eval/batches/{save_prefix}_batch_{batch_number}.csv"
+            batch_filename = f"eval/batches/{save_prefix}_batch_{batch_number}.xlsx"
             
-            batch_df.to_csv(batch_filename, index=False)
+            # Save with formatting
+            create_excel_with_formatting(batch_df, batch_filename)
             logger.info(f"Saved batch {batch_number} with {len(batch_df)} questions to {batch_filename}")
         
         time.sleep(1)
@@ -247,7 +299,10 @@ async def main():
         logger.error(f"Failed to load dataset: {str(e)}")
         return
     
-    num_samples = 3
+    # Create eval directory if it doesn't exist
+    os.makedirs("eval", exist_ok=True)
+    
+    num_samples = 3  # Change this to the desired number of samples
     logger.info(f"Will process {num_samples} samples")
     
     results_df = await process_dataset(
@@ -259,16 +314,40 @@ async def main():
         save_prefix='diabetes_mc_results'
     )
     
-    results_df.to_csv('eval/diabetes_mc_results_complete.csv', index=False)
-    logger.info("Saved complete results to eval/diabetes_mc_results_complete.csv")
+    # Create final Excel file with formatting
+    create_excel_with_formatting(results_df, 'eval/diabetes_mc_results_complete.xlsx')
+    logger.info("Saved complete results to eval/diabetes_mc_results_complete.xlsx")
+    
+    # Calculate and log summary statistics
+    total_questions = len(results_df)
+    correct_count = results_df['is_correct'].sum()
+    accuracy = (correct_count / total_questions) * 100 if total_questions > 0 else 0
     
     logger.info("\nResults Summary:")
-    logger.info(f"Total questions processed: {len(results_df)}")
-    correct_count = results_df['is_correct'].sum()
-    logger.info(f"Correct answers: {correct_count} ({correct_count/len(results_df)*100:.2f}%)")
+    logger.info(f"Total questions processed: {total_questions}")
+    logger.info(f"Correct answers: {correct_count} ({accuracy:.2f}%)")
+    
+    # Create summary sheet
+    summary_df = pd.DataFrame([{
+        'Total Questions': total_questions,
+        'Correct Answers': correct_count,
+        'Accuracy': f"{accuracy:.2f}%",
+        'Date': pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+    }])
+    
+    summary_file = 'eval/diabetes_mc_results_summary.xlsx'
+    summary_df.to_excel(summary_file, index=False)
+    logger.info(f"Saved summary statistics to {summary_file}")
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except Exception as e:
         logger.error(f"Unhandled exception: {str(e)}", exc_info=True)
+
+
+
+
+
+# Buoc 1: question => API => model_answer
+# Buoc 2: model_answer + label + cau hoi => gemini => dung ra 1 so 0
