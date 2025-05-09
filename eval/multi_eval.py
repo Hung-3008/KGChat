@@ -344,10 +344,3 @@ if __name__ == "__main__":
         asyncio.run(main())
     except Exception as e:
         logger.error(f"Unhandled exception: {str(e)}", exc_info=True)
-
-
-
-
-
-# Buoc 1: question => API => model_answer
-# Buoc 2: model_answer + label + cau hoi => gemini => dung ra 1 so 0
