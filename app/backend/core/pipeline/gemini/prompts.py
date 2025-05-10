@@ -31,10 +31,6 @@ ___Input Text___
 """
 
 
-
-
-
-
 GRAPH_FIELD_SEP = "<SEP>"
 
 PROMPTS: dict[str, Any] = {}
@@ -44,7 +40,8 @@ PROMPTS["DEFAULT_TUPLE_DELIMITER"] = "<|>"
 PROMPTS["DEFAULT_RECORD_DELIMITER"] = "##"
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 
-PROMPTS["DEFAULT_ENTITY_TYPES"] = ["organization", "person", "geo", "event", "category"]
+PROMPTS["DEFAULT_ENTITY_TYPES"] = [
+    "organization", "person", "geo", "event", "category"]
 
 # PROMPTS["entity_extraction"] = """---Goal---
 # Given a text document that is potentially relevant to this activity and a list of entity types, identify all entities of those types from the text and all relationships among the identified entities.
@@ -69,7 +66,7 @@ PROMPTS["DEFAULT_ENTITY_TYPES"] = ["organization", "person", "geo", "event", "ca
 # 3. Identify high-level key words that summarize the main concepts, themes, or topics of the entire text. These should capture the overarching ideas present in the document.
 # Format the content-level key words as ("content_keywords"{tuple_delimiter}<high_level_keywords>)
 
-# 4. Translate output in {language} as a single list of all the entities and relationships identified in steps 1 and 2, ensure all entiy and relationship in {language}. 
+# 4. Translate output in {language} as a single list of all the entities and relationships identified in steps 1 and 2, ensure all entiy and relationship in {language}.
 
 
 # Use **{record_delimiter}** as the list delimiter.
@@ -597,7 +594,6 @@ When handling information with timestamps:
 - Do not include information not provided by the Data Sources."""
 
 
-
 """
 Custom prompts for knowledge graph query processing.
 
@@ -661,21 +657,121 @@ Generate a concise response based on Data Sources and follow Response Rules, con
 }
 
 # Add a function to get the updated prompts
+
+
 def get_updated_prompts(original_prompts):
     """
     Update the original prompts with the custom prompts.
-    
+
     Args:
         original_prompts: Original prompts dictionary
-        
+
     Returns:
         Updated prompts dictionary
     """
     # Create a copy of the original prompts
     updated_prompts = dict(original_prompts)
-    
+
     # Update with custom prompts
     for key, value in CUSTOM_PROMPTS.items():
         updated_prompts[key] = value
-    
+
     return updated_prompts
+
+
+########################################################
+# Score entity candidates prompt
+PROMPTS["score_entity_candidates"] = """Please score the entities' contribution to the question on a scale from 0 to 1 (the sum of the scores of all entities is 1).
+Q: What medications are commonly prescribed for Type 2 diabetes?
+Relation: disease.medications
+Entities: Metformin; Insulin; Sulfonylureas; DPP-4 inhibitors; GLP-1 receptor agonists; SGLT2 inhibitors
+Score: 0.3, 0.2, 0.2, 0.1, 0.1, 0.1
+Metformin is the most commonly prescribed first-line medication for Type 2 diabetes, followed by Insulin and Sulfonylureas. Therefore, Metformin gets the highest score.
+
+Q: {query}
+Relation: {relation}
+Entities: {entities}"""
+
+# Evaluate information sufficiency prompt
+PROMPTS["evaluate_information"] = """Given a question and the associated retrieved knowledge graph triplets (entity, relation, entity), you are asked to answer whether it's sufficient for you to answer the question with these triplets and your knowledge (Yes or No).
+
+Q: What are the recommended dietary changes for managing Type 2 diabetes?
+Knowledge Triplets: 
+Type 2 Diabetes, disease.dietary_recommendations, Reduce carbohydrate intake
+Type 2 Diabetes, disease.dietary_recommendations, Increase fiber consumption
+Type 2 Diabetes, disease.dietary_recommendations, Limit processed foods
+A: Yes. The given knowledge triplets provide sufficient information about the recommended dietary changes for managing Type 2 diabetes, including reducing carbohydrate intake, increasing fiber consumption, and limiting processed foods.
+
+Q: What are the long-term complications of Type 2 diabetes?
+Knowledge Triplets: 
+Type 2 Diabetes, disease.complications, Heart disease
+Type 2 Diabetes, disease.complications, Kidney damage
+A: No. While the given knowledge triplets mention some complications (heart disease and kidney damage), they don't provide a comprehensive list of all possible long-term complications of Type 2 diabetes, such as nerve damage, eye problems, and foot complications.
+
+Q: {query}
+Knowledge Triplets: {triplets}"""
+
+
+# Validator prompt
+PROMPTS["validator"] = """You are a medical information validator. Evaluate whether the provided information is accurate and sufficient for the given diabetes-related question.
+
+Question: {query}
+Query Intent: {intent}
+Retrieved Information: {retrieved_info}
+Ground Truth: {ground_truth}
+Task: Is the retrieved information accurate and sufficient? Answer with Yes or No, followed by a brief explanation."""
+
+# Commentor prompt
+PROMPTS["commentor"] = """You are a specialized diabetes information assistant. Review and provide feedback on the extracted information from the question.
+
+Question: {query}
+Query Intent: {intent}
+High Level Keywords: {high_level_keywords}
+Low Level Keywords: {low_level_keywords}
+Retrieved Level 1 Nodes: {level1_nodes}
+Retrieved Level 2 Nodes: {level2_nodes}
+
+Task: Please identify any issues with:
+1. Query Intent Classification: Is it correctly classified?
+2. High Level Keywords: Are they correctly identified and relevant?
+3. Low Level Keywords: Are they correctly identified and specific enough?
+4. Level 1 Nodes: Are they relevant to the question?
+5. Level 2 Nodes: Do they provide sufficient detail?
+
+Provide specific feedback for each aspect that needs improvement."""
+
+# Generator prompt
+PROMPTS["generator"] = """You are a specialized diabetes information assistant. Generate a comprehensive, evidence-based response to the user's diabetes-related query.
+
+Question: {query}
+Query Intent: {intent}
+Retrieved Information: {retrieved_info}
+Knowledge Graph Context: {kg_context}
+Latest Research: {latest_research}
+
+Instructions:
+1. Synthesize information from all available sources
+2. Prioritize evidence-based medical information
+3. Include relevant clinical guidelines when applicable
+4. Note any limitations or uncertainties
+5. Format the response clearly with appropriate medical terminology
+6. Include relevant statistics or research findings when available
+
+Generate a well-structured, informative response."""
+
+# Evaluator prompt
+PROMPTS["evaluator"] = """You are a medical information evaluator. Assess the quality and accuracy of the generated response for a diabetes-related question.
+
+Question: {query}
+Query Intent: {intent}
+Generated Response: {response}
+Ground Truth: {ground_truth}
+
+Evaluation Criteria:
+1. Medical Accuracy (0-1)
+2. Completeness (0-1)
+3. Clarity (0-1)
+4. Evidence-based (0-1)
+5. Patient-friendly (0-1)
+
+Task: Evaluate the response based on these criteria and provide a brief explanation for each score."""
