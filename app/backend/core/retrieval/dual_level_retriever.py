@@ -117,32 +117,12 @@ async def retrieve_from_knowledge_graph(
 
         # Add validation and review if gemini_client is provided
         if gemini_client:
-            # Validate retrieved information
-            is_valid, validation_explanation = await validate_retrieved_information(
-                query=query,
-                intent=intent,
-                retrieved_info=retrieval_context,
-                gemini_client=gemini_client
-            )
-
-            # Review retrieved information
-            feedback = await review_retrieved_information(
-                query=query,
-                intent=intent,
-                high_level_keywords=high_level_keywords,
-                low_level_keywords=low_level_keywords,
-                level1_nodes=retrieval_context["level1_nodes"],
-                level2_nodes=retrieval_context["level2_nodes"],
-                gemini_client=gemini_client
-            )
-
             # Add validation and review results to context
             retrieval_context.update({
-                "validation": {
-                    "is_valid": is_valid,
-                    "explanation": validation_explanation
-                },
-                "review": feedback
+                "level1_nodes": level1_entities,
+                "level2_nodes": level2_entities,
+                "relationships": relationships,
+                "combined_text": combined_text,
             })
 
         return retrieval_context
@@ -388,8 +368,13 @@ async def evaluate_and_expand_entities(
         )
 
         try:
-            evaluation_response = await gemini_client.generate_content(evaluation_prompt)
-            is_sufficient = "yes" in evaluation_response.text.lower()
+            evaluation_response = await gemini_client.generate(prompt=evaluation_prompt)
+            if isinstance(evaluation_response, dict) and "message" in evaluation_response:
+                response_text = evaluation_response["message"]["content"]
+                is_sufficient = "yes" in response_text.lower()
+            else:
+                is_sufficient = False
+
             if is_sufficient:
                 logger.info(
                     f"Enough information found after {iteration} iterations")
@@ -415,7 +400,8 @@ async def evaluate_and_expand_entities(
                 )
 
                 # Add unique nodes only
-                unique_ids = {node.get("entity_id") for node in level1_nodes}
+                unique_ids = {node.get("entity_id")
+                              for node in level1_nodes}
                 new_nodes = [node for node in additional_level1
                              if node.get("entity_id") and node.get("entity_id") not in unique_ids]
 
@@ -467,9 +453,12 @@ async def evaluate_and_expand_entities(
             triplets=triplets
         )
         try:
-            evaluation_response = await gemini_client.generate_content(evaluation_prompt)
-            logger.info(
-                f"Final evaluation response: {evaluation_response.text}")
+            evaluation_response = await gemini_client.generate(prompt=evaluation_prompt)
+            if isinstance(evaluation_response, dict) and "message" in evaluation_response:
+                response_text = evaluation_response["message"]["content"]
+                logger.info(f"Final evaluation response: {response_text}")
+            else:
+                logger.info("Could not get evaluation response text")
         except Exception as e:
             logger.error(f"Error in final evaluation: {str(e)}")
 
@@ -548,7 +537,8 @@ def format_retrieval_results(
     level1_to_level2 = {}
 
     # Create a dictionary for quick lookup of Level 2 nodes by name
-    level2_by_name = {node.get('name', 'Unknown')                      : node for node in level2_nodes}
+    level2_by_name = {node.get('name', 'Unknown')
+                               : node for node in level2_nodes}
 
     # Group relationships by source entity ID
     for rel in relationships:
