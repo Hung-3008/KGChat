@@ -1,5 +1,5 @@
 from docling.document_converter import DocumentConverter
-from app.backend.llm.gemini_client import GeminiClient
+from backend.llm.gemini_client import GeminiClient
 from pydantic import BaseModel, Field
 from pathlib import Path
 import os
@@ -10,10 +10,10 @@ import glob
 from dotenv import load_dotenv
 
 load_dotenv()
-api_key1 = os.getenv('API_KEY_1')
-api_key2 = os.getenv('API_KEY_2')
-api_key3 = os.getenv('API_KEY_3')
-api_key4 = os.getenv('API_KEY_4')
+api_key1 = os.getenv('GEMINI_API_KEY_1')
+api_key2 = os.getenv('GEMINI_API_KEY_2')
+api_key3 = os.getenv('GEMINI_API_KEY_3')
+api_key4 = os.getenv('GEMINI_API_KEY_4')
 
 
 def read_markdown_file(markdown_path: str) -> str:
@@ -57,12 +57,14 @@ class HeadersClassification(BaseModel):
 async def clasify_headers(head_list,markdown_path:str):
     api_keys = [api_key1,
                 api_key2,
-                api_key3,
-                api_key4
+                # api_key3,
+                # api_key4
 ]
+    
     markdown_content = read_markdown_file(markdown_path)
     for i, key in enumerate(api_keys):
         try:
+            print(f"Using API key {i + 1}: {key}")
             client = GeminiClient(api_key=key)
             prompt = f"""Given a list of headers extracted from academic papers and markdown of paper, please separate them into two categories:
 
@@ -141,8 +143,8 @@ def parse_markdown_headers(markdown_path:str, content_headers, noise_headers):
     return result
 
 async def main():
-    input_dir = "/home/nguyenthang/Bản tải về/Data_test1"
-    output_dir = "/home/nguyenthang/Bản tải về/output_test"  
+    input_dir = "/home/hung/Documents/hung/code/KG_MD/KGChat/data/input"
+    output_dir = "/home/hung/Documents/hung/code/KG_MD/KGChat/data/output"  
     try:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         pdf_files = glob.glob(os.path.join(input_dir, "*.pdf"))
