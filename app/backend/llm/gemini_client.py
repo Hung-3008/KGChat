@@ -278,7 +278,64 @@ class GeminiClient:
             
             # Các lỗi khác có thể là do mạng, giới hạn tốc độ, v.v.
             return False
+    async def extract_pdf_raw_text(
+        self,
+        pdf_path: str,
+        system_prompt: Optional[str] = None,
+        model: Optional[str] = None,
+        **kwargs
+    ) -> str:
+        """
+        Extract raw text from a PDF file using Gemini 2.0 Flash.
 
+        Args:
+            pdf_path: Path to the PDF file.
+            system_prompt: Optional system prompt to customize text extraction behavior.
+            model: Model to use (defaults to self.model_name).
+            **kwargs: Additional parameters to pass to the generate method.
+
+        Returns:
+            String containing the raw text extracted from the PDF.
+
+        Raises:
+            FileNotFoundError: If the PDF file does not exist.
+            Exception: If there is an error during processing.
+        """
+        try:
+            if not os.path.exists(pdf_path):
+                raise FileNotFoundError(f"Tệp PDF không tồn tại: {pdf_path}")
+
+
+            with open(pdf_path, "rb") as file:
+                pdf_content = file.read()
+
+
+            import base64
+            pdf_base64 = base64.b64encode(pdf_content).decode("utf-8")
+            default_system_prompt = """
+            You are an expert in extracting text from PDF documents. Extract all text content from the provided PDF and return it as plain text.
+            
+            Instructions:
+            - Include all visible text in the PDF, preserving the content as accurately as possible.
+            - Do not format or structure the output; return raw text only.
+            - If the PDF contains images or scanned content, extract text using OCR capabilities.
+            """
+            system_prompt = system_prompt or default_system_prompt
+            prompt = f"Extract raw text from the following PDF content:\n\n[Base64 encoded PDF: {pdf_base64}]"
+            response = await self.generate(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                model=model or self.model_name,
+                **kwargs
+            )
+            return response["message"]["content"]
+
+        except FileNotFoundError as e:
+            logger.error(f"PDF file not found: {str(e)}")
+            raise
+        except Exception as e:
+            logger.error(f"Error extracting text from PDF: {str(e)}")
+            raise
     @classmethod
     def from_env(cls) -> 'GeminiClient':
         """
