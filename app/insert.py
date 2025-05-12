@@ -34,17 +34,17 @@ db_path = 'docs/input_2/umls.db'
 
 async def main():
     #Create level 1 graph
-    # await create_level1_graph(
-    #     input_directory=input_dir, 
-    #     neo4j_uri=neo4j_uri, 
-    #     neo4j_username=neo4j_username, 
-    #     neo4j_password=neo4j_password, 
-    #     clear_existing=True,
-    #     embedding_model=embedding,
-    #     save_batch_size=2,
-    #     qdrant_host=qdrant_host,
-    #     gemini_api_key=gemini_api_key,
-    # )
+    await create_level1_graph(
+        input_directory=input_dir, 
+        neo4j_uri=neo4j_uri, 
+        neo4j_username=neo4j_username, 
+        neo4j_password=neo4j_password, 
+        clear_existing=True,
+        embedding_model=embedding,
+        save_batch_size=2,
+        qdrant_host=qdrant_host,
+        gemini_api_key=gemini_api_key,
+    )
 
     #Create level 2 graph 
     # await create_level2_graph_from_db(
@@ -65,6 +65,8 @@ async def main():
         similarity_threshold=0.7,
         max_references_per_node=15,
     )
+
+    
 
 if __name__ == "__main__":
     asyncio.run(main())
