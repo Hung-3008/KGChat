@@ -130,3 +130,4 @@ eval/batches/*
 eval/data/*
 test/*
 data/*
+commands.ipynb

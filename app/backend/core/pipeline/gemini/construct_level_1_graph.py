@@ -3,7 +3,6 @@ import logging
 import asyncio
 import time
 from typing import List, Dict, Any, Optional, Tuple
-import aiohttp
 from dotenv import load_dotenv
 
 from backend.db.neo4j_client import Neo4jClient
@@ -14,16 +13,10 @@ from backend.core.pipeline.gemini.chunking import DocumentChunker
 from backend.core.pipeline.gemini.graph_extraction import extract_graph_elements_from_chunks
 from backend.utils.logging import get_logger
 
-
 logger = get_logger(__name__)
 
 class GeminiKeyManager:
-    def __init__(
-        self,
-        current_key_index: int = 1,
-        max_keys: int = 6,
-        key_pattern: str = "GEMINI_API_KEY_{}"
-    ):
+    def __init__(self, current_key_index: int = 1, max_keys: int = 6, key_pattern: str = "GEMINI_API_KEY_{}"):
         self.current_key_index = current_key_index
         self.max_keys = max_keys
         self.key_pattern = key_pattern
@@ -40,11 +33,8 @@ class GeminiKeyManager:
         return api_key
     
     def rotate_key(self) -> Optional[str]:
-
         for _ in range(self.max_keys):
-
             self.current_key_index = (self.current_key_index % self.max_keys) + 1
-            
             key_name = self.key_pattern.format(self.current_key_index)
             api_key = os.getenv(key_name)
             
@@ -55,10 +45,7 @@ class GeminiKeyManager:
         self.logger.error("No valid API keys found after trying all options")
         return None
 
-
 class Level1GraphConstructor:
-    """Constructs Level 1 knowledge graph from documents."""
-    
     def __init__(
         self,
         neo4j_client: Neo4jClient,
@@ -78,170 +65,25 @@ class Level1GraphConstructor:
         self.max_retry_attempts = max_retry_attempts
         self.gemini_client = None
         
+        self.key_manager = GeminiKeyManager(current_key_index=1, max_keys=6)
         
-        self.key_manager = GeminiKeyManager(
-            current_key_index=1,  
-            max_keys=6            
-        )
-        
-       
         if self.vector_db_client:
             self.vector_db_client.create_collections()
             logger.info("Vector database collections initialized")
-        
-    async def _process_chunks(
-        self, 
-        chunks: List[Dict[str, Any]]
-    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        """
-        Process chunks with key rotation when needed.
-        
-        Args:
-            chunks: List of document chunks to process
-            
-        Returns:
-            Tuple of (nodes, relationships)
-        """
-        all_nodes = []
-        all_relationships = []
-        
-        # Use sets to track processed entity_ids to avoid duplicates
-        processed_node_ids = set()
-        processed_relationship_ids = set()
-        
-        # Statistics
-        total_chunks = len(chunks)
-        chunks_processed = 0
-        extraction_attempts = 0
-        extraction_failures = 0
-        
-        # Process chunks in small groups
-        chunk_groups = self._group_chunks(chunks, 5)
-        
-        logger.info(f"Starting processing of {total_chunks} chunks in {len(chunk_groups)} groups")
-        
-        for i, chunk_group in enumerate(chunk_groups):
-            logger.info(f"Processing chunk group {i+1}/{len(chunk_groups)} ({len(chunk_group)} chunks)")
-            
-            # Try processing with retry and key rotation
-            max_attempts = 3  # Maximum number of attempts per chunk group
-            success = False
-            
-            for attempt in range(max_attempts):
-                try:
-                    extraction_attempts += 1
-                    
-                    # Ensure we have a valid Gemini client and API key
-                    if not self.gemini_client:
-                        self.gemini_client = self._create_gemini_client()
-                        if not self.gemini_client:
-                            logger.error("Failed to create Gemini client, unable to continue")
-                            break
-                    
-                    # Process the chunk group
-                    logger.info(f"Attempt {attempt+1}/{max_attempts} for chunk group {i+1} using API key index {self.key_manager.current_key_index}")
-                    
-                    res = await extract_graph_elements_from_chunks(
-                        chunks=chunk_group,
-                        gemini_api_key=self.gemini_api_key,
-                        embedding_client=self.ollama_client,
-                        vector_db_client=self.vector_db_client
-                    )
-
-                    if res is None:
-                        raise Exception("Graph extraction returned None - likely due to API quota or rate limit")
-                    
-                    nodes, relationships, _ = res
-
-                    valid_nodes = [node for node in nodes if node.get('entity_id') is not None]
-                    invalid_nodes_count = len(nodes) - len(valid_nodes)
-                    
-                    if invalid_nodes_count > 0:
-                        logger.warning(f"Extracted {len(nodes)} nodes but {invalid_nodes_count} missing entity_id")
-                    
-                    valid_relationships = [rel for rel in relationships if rel.get('source_id') and rel.get('target_id')]
-                    invalid_rels_count = len(relationships) - len(valid_relationships)
-                    
-                    if invalid_rels_count > 0:
-                        logger.warning(f"Extracted {len(relationships)} relationships but {invalid_rels_count} missing source/target")
-                    
-                    # Nếu không có nodes hoặc relationships hợp lệ, coi như thất bại
-                    if not valid_nodes and not valid_relationships:
-                        logger.warning("No valid nodes or relationships extracted, treating as failure")
-                        raise Exception("No valid extraction results - may need key rotation")
-                    
-                    new_nodes = 0
-                    for node in valid_nodes:
-                        node_id = node.get('entity_id')
-                        if node_id not in processed_node_ids:
-                            all_nodes.append(node)
-                            processed_node_ids.add(node_id)
-                            new_nodes += 1
-                    
-                    new_relationships = 0
-                    for rel in valid_relationships:
-                        rel_id = rel.get('relationship_id', f"{rel.get('source_id')}_{rel.get('target_id')}")
-                        if rel_id not in processed_relationship_ids:
-                            all_relationships.append(rel)
-                            processed_relationship_ids.add(rel_id)
-                            new_relationships += 1
-                    
-                    chunks_processed += len(chunk_group)
-                    
-                    logger.info(f"Chunk group {i+1}: Extracted {len(nodes)} nodes ({new_nodes} new, {len(nodes) - invalid_nodes_count} valid) "
-                            f"and {len(relationships)} relationships ({new_relationships} new, {len(relationships) - invalid_rels_count} valid). "
-                            f"Total: {len(all_nodes)} nodes, {len(all_relationships)} relationships")
-                    
-                    success = True
-                    break
-                
-                except Exception as e:
-                    extraction_failures += 1
-                    logger.error(f"Error processing chunks (attempt {attempt+1}/{max_attempts}): {str(e)}")
-                
-                    new_key = self.key_manager.rotate_key()
-                    if new_key:
-                        self.gemini_api_key = new_key
-                        os.environ["GEMINI_API_KEY"] = new_key
-                        self.gemini_client = self._create_gemini_client()
-                        logger.info(f"Rotated to new API key after error (index: {self.key_manager.current_key_index})")
-                    else:
-                        logger.error("No more API keys available to try")
-                        if attempt == max_attempts - 1:
-                            break
-                    
-                    await asyncio.sleep(2)
-            
-            if not success:
-                logger.warning(f"Failed to process chunk group {i+1} after {max_attempts} attempts with all available keys")
-
-        logger.info(f"Processing complete: {chunks_processed}/{total_chunks} chunks processed")
-        logger.info(f"Extraction statistics: {extraction_attempts} attempts, {extraction_failures} failures")
-        logger.info(f"Retrieved {len(all_nodes)} unique valid nodes and {len(all_relationships)} unique valid relationships")
-        
-        return all_nodes, all_relationships
-        
+    
     def _create_gemini_client(self) -> Optional[GeminiClient]:
         return GeminiClient(api_key=self.gemini_api_key)
-        
-    async def process_document(
-        self,
-        document_path: str,
-        document_id: Optional[str] = None
-    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        """Process a single document into nodes and relationships."""
-        # Generate document ID if not provided
+    
+    async def process_document(self, document_path: str, document_id: Optional[str] = None) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         if document_id is None:
             document_id = os.path.basename(document_path)
             
         logger.info(f"Processing document: {document_id}")
         
-        # Read document content
         content = await self._read_document(document_path)
         if not content:
             return [], []
             
-        # Create chunks
         chunker = DocumentChunker(
             max_chunk_tokens=self.max_chunk_tokens,
             overlap_tokens=self.chunk_overlap
@@ -254,11 +96,9 @@ class Level1GraphConstructor:
             logger.warning(f"No chunks generated for document {document_id}")
             return [], []
             
-        # Process chunks with retry mechanism
         return await self._process_chunks(chunks)
     
     async def _read_document(self, file_path: str) -> str:
-        """Read content from a document file."""
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
@@ -267,11 +107,7 @@ class Level1GraphConstructor:
             logger.error(f"Error reading document {file_path}: {str(e)}")
             return ""
     
-    async def _process_chunks(
-        self, 
-        chunks: List[Dict[str, Any]]
-    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-
+    async def _process_chunks(self, chunks: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         all_nodes = []
         all_relationships = []
         
@@ -295,10 +131,10 @@ class Level1GraphConstructor:
             
             chunk_processed = False
             
+            # Try each API key until successful or all keys are exhausted
             while key_index < max_keys and not chunk_processed:
                 current_key = self.key_manager.get_current_key()
                 if not current_key:
-                    
                     logger.warning(f"Invalid or missing API key at index {self.key_manager.current_key_index}")
                     current_key = self.key_manager.rotate_key()
                     if not current_key:
@@ -315,12 +151,12 @@ class Level1GraphConstructor:
                 max_retries = 3
                 retries_attempted = 0
                 
+                # Try extraction with current key up to max_retries times
                 while retries_attempted < max_retries and not chunk_processed:
                     try:
                         extraction_attempts += 1
                         retries_attempted += 1
                         
-                        # Ensure we have a valid Gemini client
                         if not self.gemini_client:
                             self.gemini_client = self._create_gemini_client()
                             if not self.gemini_client:
@@ -346,7 +182,6 @@ class Level1GraphConstructor:
                             await asyncio.sleep(2)
                             continue
                         
-                        
                         nodes, relationships, _ = res
 
                         valid_nodes = [node for node in nodes if node.get('entity_id') is not None]
@@ -361,7 +196,6 @@ class Level1GraphConstructor:
                         if invalid_rels_count > 0:
                             logger.warning(f"Extracted {len(relationships)} relationships but {invalid_rels_count} missing source/target")
                         
-                        
                         if not valid_nodes and not valid_relationships:
                             logger.warning(f"No valid nodes or relationships in attempt {retries_attempted}/{max_retries}")
                             extraction_failures += 1
@@ -372,6 +206,7 @@ class Level1GraphConstructor:
                             await asyncio.sleep(2)
                             continue
                         
+                        # Add new nodes to result set
                         new_nodes = 0
                         for node in valid_nodes:
                             node_id = node.get('entity_id')
@@ -380,6 +215,7 @@ class Level1GraphConstructor:
                                 processed_node_ids.add(node_id)
                                 new_nodes += 1
                         
+                        # Add new relationships to result set
                         new_relationships = 0
                         for rel in valid_relationships:
                             rel_id = rel.get('relationship_id', f"{rel.get('source_id')}_{rel.get('target_id')}")
@@ -409,6 +245,7 @@ class Level1GraphConstructor:
                 if chunk_processed:
                     break
                 
+                # Try next API key
                 new_key = self.key_manager.rotate_key()
                 if new_key:
                     logger.info(f"Rotated to new API key at index {self.key_manager.current_key_index}")
@@ -427,26 +264,20 @@ class Level1GraphConstructor:
         return all_nodes, all_relationships
     
     def _group_chunks(self, chunks: List[Dict[str, Any]], group_size: int) -> List[List[Dict[str, Any]]]:
-        """Group chunks into smaller batches."""
         return [chunks[i:i + group_size] for i in range(0, len(chunks), group_size)]
     
     async def save_to_neo4j(self, nodes: List[Dict[str, Any]], relationships: List[Dict[str, Any]]) -> bool:
-        """Save nodes and relationships to Neo4j."""
         try:
-            # Set up schema
             await self.neo4j_client.setup_schema()
             
-            # Log number of input nodes
             logger.info(f"Preparing to save {len(nodes)} nodes and {len(relationships)} relationships to Neo4j")
             
-            # Filter out nodes with null entity_id
             valid_nodes = [node for node in nodes if node.get('entity_id') is not None]
             invalid_nodes_count = len(nodes) - len(valid_nodes)
             
             if invalid_nodes_count > 0:
                 logger.warning(f"Filtered out {invalid_nodes_count} nodes with missing entity_id ({len(valid_nodes)} valid nodes remaining)")
             
-            # Import nodes
             logger.info(f"Importing {len(valid_nodes)} nodes as Level1 nodes")
             node_success = await self.neo4j_client.import_nodes(valid_nodes, "Level1")
             
@@ -454,7 +285,6 @@ class Level1GraphConstructor:
                 logger.error("Failed to import nodes to Neo4j")
                 return False
             
-            # Filter relationships
             valid_relationships = [rel for rel in relationships if rel.get('source_id') and rel.get('target_id')]
             invalid_rels_count = len(relationships) - len(valid_relationships)
             
@@ -469,15 +299,8 @@ class Level1GraphConstructor:
             if not rel_success:
                 logger.warning("Some relationships failed to import")
             
-            # Log statistics
             stats = await self.neo4j_client.get_graph_statistics()
             logger.info(f"Level 1 graph statistics after import: {stats}")
-            
-            # Log import summary
-            logger.info(f"Import summary:")
-            logger.info(f"  - Started with {len(nodes)} nodes, {len(valid_nodes)} valid ({invalid_nodes_count} filtered out)")
-            logger.info(f"  - Started with {len(relationships)} relationships, {len(valid_relationships)} valid ({invalid_rels_count} filtered out)")
-            logger.info(f"  - Current Neo4j counts: {stats.get('level1_nodes', 'N/A')} nodes, {stats.get('level1_relationships', 'N/A')} relationships")
             
             return True
         except Exception as e:
@@ -485,14 +308,11 @@ class Level1GraphConstructor:
             return False
     
     async def build_from_directory(self, directory_path: str, batch_size: int = 10) -> bool:
-        """Build Level 1 graph from all documents in a directory."""
         try:
-            # Validate directory
             if not os.path.exists(directory_path):
                 logger.error(f"Directory not found: {directory_path}")
                 return False
                 
-            # Get list of files
             files = [f for f in os.listdir(directory_path) 
                     if os.path.isfile(os.path.join(directory_path, f))]
                     
@@ -502,7 +322,6 @@ class Level1GraphConstructor:
                 
             logger.info(f"Found {len(files)} files in {directory_path}")
             
-            # Process files in batches
             current_nodes = []
             current_relationships = []
             total_nodes = 0
@@ -514,20 +333,17 @@ class Level1GraphConstructor:
                 file_path = os.path.join(directory_path, file)
                 logger.info(f"Processing file {i+1}/{len(files)}: {file}")
                 
-                # Process document
                 nodes, relationships = await self.process_document(
                     document_path=file_path,
                     document_id=file
                 )
                 
-                # Add to current batch
                 current_nodes.extend(nodes)
                 current_relationships.extend(relationships)
                 processed_files += 1
                 
                 logger.info(f"Completed processing {file}, extracted {len(nodes)} nodes and {len(relationships)} relationships")
                 
-                # Save batch if we've reached the batch size or this is the last file
                 is_last_file = (i == len(files) - 1)
                 should_save_batch = (processed_files % batch_size == 0) or is_last_file
                 
@@ -543,7 +359,6 @@ class Level1GraphConstructor:
                         total_nodes += len(current_nodes)
                         total_relationships += len(current_relationships)
                         
-                        # Clear batch
                         current_nodes = []
                         current_relationships = []
                     else:
@@ -551,12 +366,10 @@ class Level1GraphConstructor:
                         if is_last_file:
                             return False
             
-            # Log completion statistics
             logger.info(f"Completed processing {len(files)} documents")
             logger.info(f"Imported a total of {total_nodes} nodes and {total_relationships} relationships")
             logger.info(f"Successfully saved {successful_imports} batches to Neo4j")
             
-            # Get final statistics
             stats = await self.neo4j_client.get_graph_statistics()
             logger.info(f"Final Neo4j graph statistics: {stats}")
             
@@ -565,7 +378,6 @@ class Level1GraphConstructor:
         except Exception as e:
             logger.error(f"Error building Level 1 graph: {str(e)}", exc_info=True)
             return False
-
 
 async def create_level1_graph(
     input_directory: str,
@@ -583,15 +395,12 @@ async def create_level1_graph(
     qdrant_api_key: Optional[str] = None,
     qdrant_url: Optional[str] = None
 ) -> bool:
-
     if not gemini_api_key:
-        # Try to use the first key from environment if none provided
         gemini_api_key = os.getenv("GEMINI_API_KEY_1")
         if not gemini_api_key:
             logger.error("No Gemini API key available")
             return False
 
-    # Initialize clients
     neo4j_client = Neo4jClient(
         uri=neo4j_uri, 
         username=neo4j_username, 
@@ -599,12 +408,11 @@ async def create_level1_graph(
     )
     
     ollama_client = OllamaClient(
-        host=ollama_host, 
+        host=ollama_host,  
         model_name=ollama_model,
         embedding_model=embedding_model
     )
     
-    # Initialize VectorDBClient if Qdrant parameters are provided
     vector_db_client = None
     if qdrant_host or qdrant_url:
         vector_db_client = VectorDBClient(
@@ -612,18 +420,16 @@ async def create_level1_graph(
             port=qdrant_port,
             api_key=qdrant_api_key,
             url=qdrant_url,
-            vector_size=1024  # Assuming 1024-dimensional embeddings
+            vector_size=1024
         )
         logger.info("Initialized Vector Database client")
     
     try:
-        # Check Neo4j connectivity
         connected = await neo4j_client.verify_connectivity()
         if not connected:
             logger.error("Failed to connect to Neo4j, exiting")
             return False
         
-        # Clear existing data if requested
         if clear_existing:
             logger.info("Clearing existing Level 1 nodes and relationships from Neo4j")
             await neo4j_client.execute_query("""
@@ -634,26 +440,19 @@ async def create_level1_graph(
                     )
                     """)
             
-            # Clear Level 1 nodes from Qdrant if vector_db_client is available
             if vector_db_client:
                 try:
-                    # Check if collection exists before attempting to delete
                     collections = vector_db_client.client.get_collections()
                     collection_names = [c.name for c in collections.collections]
                     
                     if "level1_nodes" in collection_names:
                         logger.info("Clearing existing Level 1 nodes from vector database")
-                        # Delete the collection to remove all vectors
-                        vector_db_client.client.delete_collection("level1_nodes")
-                        # Recreate the collection
                         vector_db_client.create_collections()
                     else:
-                        # Just ensure the collections exist
                         vector_db_client.create_collections()
                 except Exception as e:
                     logger.error(f"Error clearing Level 1 nodes from vector database: {str(e)}")
         
-        # Create and run the constructor
         constructor = Level1GraphConstructor(
             neo4j_client=neo4j_client,
             ollama_client=ollama_client,
@@ -661,7 +460,6 @@ async def create_level1_graph(
             vector_db_client=vector_db_client
         )
         
-        # Build the graph
         success = await constructor.build_from_directory(
             input_directory, 
             batch_size=save_batch_size
@@ -669,5 +467,4 @@ async def create_level1_graph(
         
         return success
     finally:
-        # Always close the Neo4j client
         await neo4j_client.close()

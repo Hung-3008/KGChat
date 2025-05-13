@@ -16,7 +16,7 @@ class Neo4jClient:
             load_dotenv()
             uri = uri or os.getenv("NEO4J_URI", "bolt://localhost:7687")
             username = username or os.getenv("NEO4J_USERNAME", "neo4j")
-            password = password or os.getenv("NEO4J_PASSWORD", "password")
+            password = password or os.getenv("NEO4J_PASSWORD", "12345678")
         
         self.uri = uri
         self.username = username
@@ -111,15 +111,11 @@ class Neo4jClient:
         Returns:
             True if schema setup is successful, False otherwise
         """
-        # Define schema creation queries based on your graph_constructor.py
         schema_queries = [
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Level1) REQUIRE n.entity_id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Level2) REQUIRE n.entity_id IS UNIQUE",
             "CREATE INDEX level1_name_idx IF NOT EXISTS FOR (n:Level1) ON (n.name)",
             "CREATE INDEX level2_name_idx IF NOT EXISTS FOR (n:Level2) ON (n.name)",
-            # Vector index queries only if Neo4j version supports it (Version 5.11+)
-            # "CREATE VECTOR INDEX level1_embedding_idx IF NOT EXISTS FOR (n:Level1) ON n.vector_embedding",
-            # "CREATE VECTOR INDEX level2_embedding_idx IF NOT EXISTS FOR (n:Level2) ON n.vector_embedding"
         ]
         
         try:
@@ -441,10 +437,6 @@ class Neo4jClient:
                 logger.warning(f"Node missing entity_id, skipping: {cleaned_node.get('entity_name', 'unknown')}")
                 continue
                 
-            # # Ensure entity_name exists
-            # if 'entity_name' not in cleaned_node:
-            #     cleaned_node['entity_name'] = cleaned_node['entity_id']
-                
             # Ensure entity_type exists
             if 'entity_type' not in cleaned_node:
                 cleaned_node['entity_type'] = 'CONCEPT'
@@ -636,7 +628,7 @@ class Neo4jClient:
             return []
 
 
-# Example usage function
+
 async def import_graph_from_file(file_path: str, neo4j_client: Neo4jClient) -> bool:
     """
     Import a knowledge graph from a JSON file into Neo4j.
@@ -649,20 +641,16 @@ async def import_graph_from_file(file_path: str, neo4j_client: Neo4jClient) -> b
         True if import is successful, False otherwise
     """
     try:
-        # Load graph data from file
         with open(file_path, 'r', encoding='utf-8') as f:
             graph_data = json.load(f)
         
-        # Check if graph data is valid
         if 'nodes' not in graph_data or 'edges' not in graph_data:
             logger.error(f"Invalid graph data: missing 'nodes' or 'edges' key")
             return False
         
-        # Import graph into Neo4j
         success = await neo4j_client.import_knowledge_graph(graph_data)
         
         if success:
-            # Get statistics after import
             stats = await neo4j_client.get_graph_statistics()
             logger.info(f"Import completed. Graph statistics: {json.dumps(stats)}")
         
@@ -672,50 +660,40 @@ async def import_graph_from_file(file_path: str, neo4j_client: Neo4jClient) -> b
         return False
 
 
-# Main execution if this file is run directly
 async def main():
     """Example main function demonstrating the Neo4jClient usage."""
-    # Initialize client with environment variables
     client = Neo4jClient()
     
     try:
-        # Verify connectivity
         connected = await client.verify_connectivity()
         if not connected:
             logger.error("Failed to connect to Neo4j, exiting")
             return
-        
-        # Clear database (optional, be careful!)
-        # await client.clear_database()
-        
-        # Setup schema
+
         schema_success = await client.setup_schema()
         if not schema_success:
             logger.warning("Schema setup had issues")
         
-        # Example: Load graph data from a file
-        # Adjust the path as needed
+
         graph_path = "output/combined_graph.json"
         import_success = await import_graph_from_file(graph_path, client)
         
         if import_success:
             logger.info("Graph successfully imported")
             
-            # Example: Execute a query
+
             query_result = await client.execute_query(
                 "MATCH (n:Level1)-[r:REFERENCES]->(m:Level2) RETURN n.name, m.name LIMIT 5"
             )
             logger.info(f"Sample cross-level references: {query_result}")
         
     finally:
-        # Close the Neo4j connection
         await client.close()
 
 
 if __name__ == "__main__":
-    # Set up logging
+
     logging.basicConfig(level=logging.INFO, 
                        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    
-    # Run the main function
+
     asyncio.run(main())
