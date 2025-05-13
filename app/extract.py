@@ -8,8 +8,6 @@ import json
 import re
 import glob
 from dotenv import load_dotenv
-import gc 
-from tqdm import tqdm  
 
 load_dotenv()
 
@@ -46,7 +44,7 @@ def extract_header_list(markdown_path: str) -> list[str]:
 
 
 def to_markdown(pdf_path: str, output_markdown_path: str) -> str:
-    """Convert PDF to Markdown with memory cleanup"""
+    """Convert PDF to Markdown"""
     if not os.path.isfile(pdf_path):
         raise FileNotFoundError(f"PDF file not found: {pdf_path}")
     
@@ -59,12 +57,8 @@ def to_markdown(pdf_path: str, output_markdown_path: str) -> str:
         converter = DocumentConverter()
         result = converter.convert(pdf_path)
         
-
         with open(markdown_path, "w", encoding="utf-8") as f:
             f.write(result.document.export_to_markdown())
-        
-        del result
-        gc.collect()
         
         return str(markdown_path) 
     except Exception as e:
@@ -77,16 +71,13 @@ class HeadersClassification(BaseModel):
 
 
 async def classify_headers(head_list, markdown_path: str):
-    """Classify headers with reduced memory usage"""
+    """Classify headers"""
     active_keys = [key for key in [api_keys["key1"], api_keys["key2"]] if key]
     
-    
-    with tqdm(total=len(active_keys), desc="Trying API keys", leave=False) as pbar:
-        for i, key in enumerate(active_keys):
-            try:
-                pbar.set_description(f"Trying API key {i + 1}")
-                client = GeminiClient(api_key=key)
-                prompt = f"""Given a list of headers extracted from academic papers and markdown of paper, please separate them into two categories:
+    for i, key in enumerate(active_keys):
+        try:
+            client = GeminiClient(api_key=key)
+            prompt = f"""Given a list of headers extracted from academic papers and markdown of paper, please separate them into two categories:
 1. Valuable Headers: Essential sections that contain academic content such as Abstract, Introduction, Methods, Results, Discussion, Conclusion, Theoretical Framework, etc.
 
 2. Noise Headers: Non-essential elements that don't contain primary research content, such as References, Bibliography, Acknowledgments, page numbers, dates, journal names, author information, etc.
@@ -98,21 +89,15 @@ For each header in the following list, identify whether it's a valuable header o
 Finally, provide two clean lists:
 - Content Headers: A list of valuable headers.
 - Noise Headers: A list of noise headers.
-                """
-                
-                response = await client.generate(prompt=prompt, temperature=0, format=HeadersClassification)
-                
-                del prompt
-                gc.collect()
-                
-                pbar.update(len(active_keys))  
-                return response[0].content_headers, response[0].noise_headers
-                
-            except Exception as e:
-                pbar.update(1)  
-                if i == len(active_keys) - 1:
-                    raise Exception("All API keys failed.")
-                pbar.set_description(f"API key {i + 1} failed, trying key {i + 2}")
+            """
+            
+            response = await client.generate(prompt=prompt, temperature=0, format=HeadersClassification)
+            
+            return response[0].content_headers, response[0].noise_headers
+            
+        except Exception as e:
+            if i == len(active_keys) - 1:
+                raise Exception("All API keys failed.")
 
 
 def parse_markdown_headers(markdown_path: str, content_headers, noise_headers):
@@ -160,50 +145,34 @@ def parse_markdown_headers(markdown_path: str, content_headers, noise_headers):
             else:
                 result["contents"].append(section)
     
-    del markdown_text
-    gc.collect()
-    
     return result
 
 
 async def process_single_pdf(pdf_path, output_dir):
-    """Process a single PDF file with memory cleanup between steps and progress tracking"""
+    """Process a single PDF file"""
     file_name = Path(pdf_path).name
     try:
-        steps = ["Converting to Markdown", "Extracting headers", "Classifying headers", "Parsing markdown", "Saving results"]
-        with tqdm(total=len(steps), desc=f"Processing {file_name}", leave=False) as pbar:
-            # Step 1: Convert PDF to Markdown
-            pbar.set_description(f"{file_name}: {steps[0]}")
-            markdown_path = to_markdown(pdf_path, output_dir)
-            gc.collect()  # Clear memory after conversion
-            pbar.update(1)
-            
-            # Step 2: Extract headers from Markdown
-            pbar.set_description(f"{file_name}: {steps[1]}")
-            head_list = extract_header_list(markdown_path)
-            gc.collect()  # Clear memory after extraction
-            pbar.update(1)
-            
-            # Step 3: Classify headers using GeminiClient
-            pbar.set_description(f"{file_name}: {steps[2]}")
-            content_headers, noise_headers = await classify_headers(head_list, markdown_path)
-            gc.collect()  # Clear memory after classification
-            pbar.update(1)
-            
-            # Step 4: Parse Markdown based on classified headers
-            pbar.set_description(f"{file_name}: {steps[3]}")
-            result = parse_markdown_headers(markdown_path, content_headers, noise_headers)
-            pbar.update(1)
-            
-            # Step 5: Save the result to a JSON file
-            pbar.set_description(f"{file_name}: {steps[4]}")
-            output_json_path = Path(output_dir) / f"{Path(pdf_path).stem}_result.json"
-            with open(output_json_path, "w", encoding="utf-8") as f:
-                json.dump(result, f, ensure_ascii=False, indent=4)
-            pbar.update(1)
+        # Step 1: Convert PDF to Markdown
+        print(f"Converting {file_name} to Markdown")
+        markdown_path = to_markdown(pdf_path, output_dir)
         
-        del result, head_list, content_headers, noise_headers
-        gc.collect()
+        # Step 2: Extract headers from Markdown
+        print(f"Extracting headers from {file_name}")
+        head_list = extract_header_list(markdown_path)
+        
+        # Step 3: Classify headers using GeminiClient
+        print(f"Classifying headers for {file_name}")
+        content_headers, noise_headers = await classify_headers(head_list, markdown_path)
+        
+        # Step 4: Parse Markdown based on classified headers
+        print(f"Parsing markdown for {file_name}")
+        result = parse_markdown_headers(markdown_path, content_headers, noise_headers)
+        
+        # Step 5: Save the result to a JSON file
+        print(f"Saving results for {file_name}")
+        output_json_path = Path(output_dir) / f"{Path(pdf_path).stem}_result.json"
+        with open(output_json_path, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=4)
         
         return True
     except Exception as e:
@@ -212,8 +181,8 @@ async def process_single_pdf(pdf_path, output_dir):
 
 
 async def main():
-    input_dir = "/home/hung/Documents/hung/code/KG_MD/KGChat/data/input/001"
-    output_dir = "/home/hung/Documents/hung/code/KG_MD/KGChat/data/output/001"
+    input_dir = "/home/hung/Documents/hung/code/KG_MD/KGChat/data/input/002"
+    output_dir = "/home/hung/Documents/hung/code/KG_MD/KGChat/data/output/002"
     
     try:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -225,16 +194,32 @@ async def main():
             
         print(f"Found {len(pdf_files)} PDF files in {input_dir}")
         
-        successful_files = 0
-        with tqdm(total=len(pdf_files), desc="Processing PDF files") as pbar:
-            for pdf_path in pdf_files:
-                success = await process_single_pdf(pdf_path, output_dir)
-                if success:
-                    successful_files += 1
-                gc.collect()
-                pbar.update(1)
+        md_files = glob.glob(os.path.join(output_dir, "*.md"))
+        processed_files = set()
+        
+        for md_path in md_files:
+            md_basename = os.path.basename(md_path)
+            md_filename_without_ext = os.path.splitext(md_basename)[0]
+            processed_files.add(md_filename_without_ext)
+        
+        unprocessed_pdf_files = []
+        for pdf_path in pdf_files:
+            pdf_basename = os.path.basename(pdf_path)
+            pdf_filename_without_ext = os.path.splitext(pdf_basename)[0]
             
-        print(f"\nProcessed {successful_files} out of {len(pdf_files)} PDF files successfully.")
+            if pdf_filename_without_ext not in processed_files:
+                unprocessed_pdf_files.append(pdf_path)
+        
+        print(f"Found {len(unprocessed_pdf_files)} unprocessed PDF files out of {len(pdf_files)} total")
+        
+        successful_files = 0
+        for pdf_path in unprocessed_pdf_files:
+            print(f"Processing {os.path.basename(pdf_path)}")
+            success = await process_single_pdf(pdf_path, output_dir)
+            if success:
+                successful_files += 1
+            
+        print(f"\nProcessed {successful_files} out of {len(unprocessed_pdf_files)} PDF files successfully.")
         
     except Exception as e:
         print(f"Unexpected error in main: {str(e)}")
