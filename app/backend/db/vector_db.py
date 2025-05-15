@@ -79,6 +79,30 @@ class VectorDBClient:
                 )
                 logger.info(f"Created collection {collection_name}")
     
+    def get_collection_names(self) -> List[str]:
+        """
+        Get a list of all collection names in the vector database.
+        
+        Returns:
+            List of collection names as strings
+        """
+        try:
+            # Get all collections from the database
+            collections = self.client.get_collections()
+            
+            # Extract just the names from the collection objects
+            collection_names = []
+            if hasattr(collections, 'collections'):
+                collection_names = [collection.name for collection in collections.collections]
+            
+            logger.info(f"Retrieved {len(collection_names)} collection names from vector database")
+            return collection_names
+            
+        except Exception as e:
+            logger.error(f"Error retrieving collection names from vector database: {str(e)}")
+            return []
+
+
     def store_node(self, node: Dict[str, Any], collection_name: str) -> bool:
         try:
             # Tạo UUID mới làm ID
@@ -232,3 +256,101 @@ class VectorDBClient:
         except Exception as e:
             self.logger.error(f"Error retrieving points by ID from collection {collection_name}: {str(e)}")
             return []
+    
+    def delete_points(
+        self,
+        collection_name: str,
+        point_ids: Optional[List[str]] = None,
+        filter_condition: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """
+        Delete points from a specified collection.
+        
+        Args:
+            collection_name: Name of the collection to delete points from (e.g., "level1_nodes" or "level2_nodes")
+            point_ids: Optional list of specific point IDs to delete. If None, deletes based on filter_condition.
+            filter_condition: Optional filter condition to select points for deletion. If None and point_ids is None, deletes all points.
+            
+        Returns:
+            True if the deletion was successful, False otherwise
+        """
+        try:
+            if not collection_name:
+                logger.error("Collection name must be provided")
+                return False
+                
+            # Check if collection exists
+            try:
+                self.client.get_collection(collection_name)
+            except Exception as e:
+                logger.error(f"Collection {collection_name} does not exist: {str(e)}")
+                return False
+                
+            # Different deletion strategies based on provided parameters
+            if point_ids:
+                # Delete specific points by IDs
+                logger.info(f"Deleting {len(point_ids)} points by ID from collection {collection_name}")
+                self.client.delete(
+                    collection_name=collection_name,
+                    points=point_ids
+                )
+                logger.info(f"Successfully deleted {len(point_ids)} points from {collection_name}")
+                
+            elif filter_condition:
+                # Delete points matching a filter condition
+                logger.info(f"Deleting points matching filter from collection {collection_name}")
+                self.client.delete(
+                    collection_name=collection_name,
+                    filters=filter_condition
+                )
+                logger.info(f"Successfully deleted points matching filter from {collection_name}")
+                
+            else:
+                # Delete all points in the collection (scroll API with batch deletion)
+                logger.info(f"Deleting all points from collection {collection_name}")
+                
+                # Get the total count for logging purposes
+                collection_info = self.client.get_collection(collection_name)
+                total_points = collection_info.vectors_count
+                
+                # Use scroll parameter for efficient deletion of all points
+                batch_size = 1000
+                self.client.scroll(
+                    collection_name=collection_name,
+                    limit=batch_size,
+                    with_payload=False,
+                    with_vectors=False
+                )
+                
+                # Use the `recreate_collection` approach which is more efficient for deleting all points
+                vector_size = self.vector_size
+                distance = models.Distance.COSINE
+                
+                # Store current collection config
+                try:
+                    collection_config = self.client.get_collection(collection_name)
+                    if hasattr(collection_config, 'config') and hasattr(collection_config.config, 'params'):
+                        if hasattr(collection_config.config.params, 'vectors'):
+                            vector_size = collection_config.config.params.vectors.size
+                        if hasattr(collection_config.config.params, 'vectors'):
+                            distance = collection_config.config.params.vectors.distance
+                except Exception as e:
+                    logger.warning(f"Could not retrieve existing collection config, using defaults: {str(e)}")
+                
+                # Delete and recreate the collection
+                self.client.delete_collection(collection_name)
+                self.client.create_collection(
+                    collection_name=collection_name,
+                    vectors_config=models.VectorParams(
+                        size=vector_size,
+                        distance=distance
+                    )
+                )
+                
+                logger.info(f"Successfully deleted all {total_points} points from {collection_name} by recreating the collection")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error deleting points from collection {collection_name}: {str(e)}")
+            return False

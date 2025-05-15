@@ -95,7 +95,7 @@ class Level1GraphConstructor:
         if not chunks:
             logger.warning(f"No chunks generated for document {document_id}")
             return [], []
-            
+        time.sleep(1)
         return await self._process_chunks(chunks)
     
     async def _read_document(self, file_path: str) -> str:
@@ -108,6 +108,7 @@ class Level1GraphConstructor:
             return ""
     
     async def _process_chunks(self, chunks: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        time.sleep(2)
         all_nodes = []
         all_relationships = []
         
@@ -432,27 +433,35 @@ async def create_level1_graph(
         
         if clear_existing:
             logger.info("Clearing existing Level 1 nodes and relationships from Neo4j")
-            await neo4j_client.execute_query("""
-                    CALL apoc.periodic.iterate(
-                    'MATCH (n:Level1) RETURN n',
-                    'DETACH DELETE n',
-                    {batchSize:1000}
-                    )
-                    """)
+            try:
+                await neo4j_client.execute_query("""
+                        CALL apoc.periodic.iterate(
+                        'MATCH (n:Level1) RETURN n',
+                        'DETACH DELETE n',
+                        {batchSize:1000}
+                        ) 
+                        """)
+                logger.info("Cleared existing Level 1 nodes and relationships from Neo4j")
+            except:
+                await neo4j_client.execute_query("""
+                        MATCH (n:Level1)
+                        DETACH DELETE n
+                        """)
+                logger.info("Cleared all nodes and relationships from Neo4j")
             
             if vector_db_client:
                 try:
-                    collections = vector_db_client.client.get_collections()
-                    collection_names = [c.name for c in collections.collections]
-                    
+                    collection_names = vector_db_client.get_collection_names()
                     if "level1_nodes" in collection_names:
-                        logger.info("Clearing existing Level 1 nodes from vector database")
-                        vector_db_client.create_collections()
+                        vector_db_client.delete_points("level1_nodes")
+                        logger.info("Cleared existing Level 1 nodes from vector database")
                     else:
                         vector_db_client.create_collections()
+                        logger.info("Created collections in vector database")
+
                 except Exception as e:
                     logger.error(f"Error clearing Level 1 nodes from vector database: {str(e)}")
-        
+
         constructor = Level1GraphConstructor(
             neo4j_client=neo4j_client,
             ollama_client=ollama_client,

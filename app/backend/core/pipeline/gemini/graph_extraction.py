@@ -12,8 +12,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from backend.llm.gemini_client import GeminiClient
 from backend.core.pipeline.gemini.prompts import GEMINI_ENTITY_EXTRACTION_PROMPT
 from backend.db.vector_db import VectorDBClient
-from langchain_core.prompts import PromptTemplate
-
+#from langchain_core.prompts import PromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 logger = logging.getLogger(__name__)
 
 def remove_duplicate_relationships(relationships: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -54,9 +54,16 @@ class GraphElementExtractor:
         self.vector_db_client = vector_db_client
         self.gemini_client = gemini_client or self._create_gemini_client()
         self._setup_llm()
-        self.prompt_template = PromptTemplate(
-            input_variables=["text"],
-            template=GEMINI_ENTITY_EXTRACTION_PROMPT
+        # self.prompt_template = PromptTemplate(
+        #     input_variables=["text"],
+        #     template=GEMINI_ENTITY_EXTRACTION_PROMPT
+        # )
+
+        self.prompt_template = ChatPromptTemplate.from_messages(
+            messages=[
+                ("system", GEMINI_ENTITY_EXTRACTION_PROMPT),
+                ("human", "Please extract the specified nodes and relationships from this text: {input}")
+            ]
         )
         self.llm_transformer = None
         if self.vector_db_client:

@@ -2,32 +2,24 @@ from __future__ import annotations
 from typing import Any
 
 GEMINI_ENTITY_EXTRACTION_PROMPT = """
----Goal---
-You are an expert knowledge graph builder tasked with extracting a structured representation of entities and relationships from the provided text. The extracted information will be used to construct a knowledge graph with two distinct levels.
+Extract comprehensive medical entities from the provided research text. For each entity, include:
 
----Instructions---
-Analyze the provided text and identify:
+- entity_id: Standardized name
+- entity_type: Category (Condition, Procedure, Factor, etc.)
+- description: Extract exact descriptions from the text where possible, otherwise provide a concise definition based on context
+- knowledge_level: General (1) or specific (2)
 
-1. All significant entities with these attributes:
-   - entity_name: Unique identifier for the entity (use the entity's name)
-   - entity_type: A short name for the entity type (e.g., MEDICATION, CONDITION, SYMPTOM, etc.)
-   - entity_description: A description of the entity using information from the text
+Focus on:
+1. Medical conditions and diseases
+2. Diagnostic and screening procedures
+3. Risk factors and demographics
+4. Statistical findings with values (prevalence, ORs, CIs)
+5. Study methods and designs
+6. Geographical and population information
 
-2. All meaningful relationships between the identified entities:
-   - source_entity: Name of the source entity (must match an entity_name you identified)
-   - target_entity: Name of the target entity (must match an entity_name you identified) 
-   - relationship_type: Type of relationship (e.g., TREATS, CAUSES, PART_OF, RELATED_TO, etc.)
-   - relationship_description: Clear description of how the entities are related
+Important: Descriptions should use language directly from the text where available, preserving the original medical context and terminology. For statistical findings, include the exact values (AOR, CI, percentages) from the text.
 
----Important Notes---
-- Be comprehensive but precise - identify all significant entities and meaningful relationships
-- Ensure all relationship endpoints refer to entities that exist in your entities list
-- Do not create relationships between entities not present in the text
-- Maintain consistent naming of entities across your response
-
-___Input Text___
-{input}
-
+Return all entities organized by type.
 """
 
 

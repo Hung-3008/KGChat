@@ -1,15 +1,50 @@
-sudo apt update
-sudo apt install tmux
+{'content': '## Predictors of\xa0hearing screening among\xa0residents of\xa0Saudi Arabia at\xa0primary healthcare settings in\xa0Riyadh: useful insights from\xa0a\xa0cross-sectional survey\n\n\n\n\n\nIbtehaj F. Alshdoukhi 1,2 , Mamdouh M. Shubair 3 , Ashraf El-Metwally 2,4* , Rasha Abdullah Alhazzaa 2,5 , Faris Fatani 6 , Ali Alshehri 2,4 , Aljohrah Ibrahim Saleh Aldubikhi , Lama Mohammad Alomari 7 8 , Nouf Binhowaimel 6 and Hanan M. Al Kadri 2,9,10\n\n## Abstract\n\nBackground Despite the significant prevalence of hearing impairment and the devastating impact on the quality of life, screening patterns regarding hearing loss in adults are significantly reduced. It is necessary to identify the proportion of residents of Saudi Arabia which undergo for hearing screening and identify predictors of hearing loss. Therefore, we conducted this study to identify predictors of the hearing screening among residents of Saudi Arabia.\n\nMethods A cross-sectional study was undertaken, and an electronic questionnaire was administered to 14,239 patients who visited primary health care centers. Primary health care centers were selected using a random sampling technique. Data was collected on hearing screening and other sociodemographic and behavioural factors along with other co-morbidities. We performed multiple logistic regressions to identify predictors that were significantly associated with hearing screening. We performed analysis using SPSS version 26.0 for Windows and reported adjusted odds ratios (AORs) with 95% CIs.',
+ 'tokens': 339,
+ 'paragraph_count': 5,
+ 'chunk_index': 0,
+ 'chunk_id': '8ca33b54-6f86-40bf-8830-4f45b1161878',
+ 'total_chunks': 25,
+ 'document_id': 'test_123',
+ 'knowledge_level': 1}
 
 
-tmux new -s extract_01
-conda activate <<env>>
-python app/extract.py
-
-
-tmux new -s extract_02
-# update code 
-conda activate <<env>>
-python app/extract.py
-
-
+ [{'entity_id': 'Hearing Impairment',
+  'entity_type': 'Condition',
+  'description': 'significant prevalence of hearing impairment and the devastating impact on the quality of life',
+  'knowledge_level': 1},
+ {'entity_id': 'Hearing Screening',
+  'entity_type': 'Procedure',
+  'description': 'hearing screening',
+  'knowledge_level': 1},
+ {'entity_id': 'Residents Of Saudi Arabia',
+  'entity_type': 'Population',
+  'description': 'residents of Saudi Arabia',
+  'knowledge_level': 1},
+ {'entity_id': 'Cross-Sectional Study',
+  'entity_type': 'Study',
+  'description': 'cross-sectional study',
+  'knowledge_level': 1},
+ {'entity_id': 'Primary Health Care Centers',
+  'entity_type': 'Location',
+  'description': 'primary health care centers',
+  'knowledge_level': 1},
+ {'entity_id': 'Riyadh',
+  'entity_type': 'Location',
+  'description': 'primary healthcare settings in Riyadh',
+  'knowledge_level': 1},
+ {'entity_id': 'Adjusted Odds Ratios (Aors)',
+  'entity_type': 'Statistic',
+  'description': 'adjusted odds ratios (AORs) with 95% CIs',
+  'knowledge_level': 1},
+ {'entity_id': 'Spss Version 26.0',
+  'entity_type': 'Tool',
+  'description': 'SPSS version 26.0 for Windows',
+  'knowledge_level': 1},
+ {'entity_id': 'Sociodemographic And Behavioural Factors',
+  'entity_type': 'Factor',
+  'description': 'sociodemographic and behavioural factors',
+  'knowledge_level': 1},
+ {'entity_id': 'Co-Morbidities',
+  'entity_type': 'Condition',
+  'description': 'other co-morbidities',
+  'knowledge_level': 1}]

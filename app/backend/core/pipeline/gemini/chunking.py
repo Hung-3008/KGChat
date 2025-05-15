@@ -19,8 +19,8 @@ class DocumentChunker:
     
     def __init__(
         self, 
-        max_chunk_tokens: int = 12000,
-        overlap_tokens: int = 1000,
+        max_chunk_tokens: int = 10000,
+        overlap_tokens: int = 800,
         min_chunk_tokens: int = 100
     ):
         """
@@ -35,9 +35,8 @@ class DocumentChunker:
         self.overlap_tokens = overlap_tokens
         self.min_chunk_tokens = min_chunk_tokens
         
-        # Estimate character lengths based on token counts (approx. 4 chars per token)
-        self.max_chunk_size = max_chunk_tokens * 4
-        self.overlap_size = overlap_tokens * 4
+        self.max_chunk_size = max_chunk_tokens
+        self.overlap_size = overlap_tokens
     
     def split_into_paragraphs(self, text: str) -> List[str]:
         """
