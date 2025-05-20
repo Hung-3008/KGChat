@@ -1,14 +1,10 @@
-"""
-Cross-Level Relationship Builder
-
-This module builds cross-level relationships between Level 1 and Level 2 nodes
-by using vector similarity to find connections between general concepts and specific details.
-"""
 import os
 import asyncio
 from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
 import uuid
+import asyncio
+from tqdm import tqdm
 
 from qdrant_client import QdrantClient
 from backend.db.neo4j_client import Neo4jClient
@@ -106,23 +102,70 @@ class CrossLevelRelationshipBuilder:
         return relationships
     
     async def save_relationships_to_neo4j(self, relationships: List[Dict[str, Any]]) -> bool:
+        """
+        Save relationships to Neo4j in smaller sub-batches to optimize memory usage.
+        
+        Args:
+            relationships: List of relationship dictionaries
+            
+        Returns:
+            True if saving was successful, False otherwise
+        """
         try:
+            if not relationships:
+                logger.info("No relationships to save")
+                return True
+                
             logger.info(f"Saving {len(relationships)} cross-level relationships to Neo4j")
             
-            for i in range(0, len(relationships), self.batch_size):
-                batch = relationships[i:i + self.batch_size]
-                success = await self.neo4j_client.import_relationships(batch, "Level1", "Level2")
-                if not success:
-                    logger.warning(f"Failed to import batch {i//self.batch_size + 1}")
-                else:
-                    logger.info(f"Successfully imported batch {i//self.batch_size + 1}")
+            # Use smaller sub-batches for better memory management
+            sub_batch_size = min(1000, self.batch_size)
+            
+            for i in range(0, len(relationships), sub_batch_size):
+                sub_batch = relationships[i:i + sub_batch_size]
+                
+                # Optimize the import query for better performance
+                query = """
+                UNWIND $batch AS rel
+                MATCH (source:Level1 {entity_id: rel.source_id})
+                MATCH (target:Level2 {entity_id: rel.target_id})
+                CALL {
+                    WITH source, target, rel
+                    MERGE (source)-[r:REFERENCES]->(target)
+                    ON CREATE SET r.similarity_score = rel.similarity_score,
+                                r.created_at = timestamp()
+                    ON MATCH SET r.similarity_score = CASE 
+                        WHEN rel.similarity_score > r.similarity_score THEN rel.similarity_score
+                        ELSE r.similarity_score
+                    END,
+                    r.updated_at = timestamp()
+                }
+                """
+                
+                try:
+                    await self.neo4j_client.execute_query(query, {"batch": sub_batch})
+                    logger.info(f"Successfully imported sub-batch {i//sub_batch_size + 1}/{(len(relationships)-1)//sub_batch_size + 1}")
+                except Exception as e:
+                    logger.error(f"Error importing sub-batch {i//sub_batch_size + 1}: {str(e)}")
+                    
+                # Add a small delay between sub-batches to reduce database load
+                if i + sub_batch_size < len(relationships):
+                    await asyncio.sleep(0.2)
             
             return True
         except Exception as e:
             logger.error(f"Error saving relationships to Neo4j: {str(e)}")
             return False
     
+
     async def build_cross_level_relationships(self) -> bool:
+        """
+        Build cross-level relationships between Level 1 and Level 2 nodes with batch processing
+        and visual progress tracking using tqdm.
+        
+        Returns:
+            True if successful, False otherwise
+        """
         try:
             if not await self.neo4j_client.verify_connectivity():
                 logger.error("Failed to connect to Neo4j, exiting")
@@ -137,41 +180,118 @@ class CrossLevelRelationshipBuilder:
                 logger.error(f"Failed to connect to Qdrant: {str(e)}")
                 return False
             
-            level1_nodes = await self.get_level1_nodes()
-            if not level1_nodes:
+            # First, count total number of Level 1 nodes with embeddings
+            count_query = """
+            MATCH (n:Level1)
+            WHERE n.vector_embedding IS NOT NULL
+            RETURN COUNT(n) AS total
+            """
+            result = await self.neo4j_client.execute_query(count_query)
+            total_nodes = result[0]["total"] if result else 0
+            
+            if total_nodes == 0:
                 logger.warning("No Level 1 nodes found with vector embeddings")
                 return False
-            
+                
+            # Process Level 1 nodes in batches
+            batch_size = 500  # Adjust based on your memory constraints
+            total_batches = (total_nodes + batch_size - 1) // batch_size  # Ceiling division
+            offset = 0
+            total_processed = 0
             total_relationships = []
+            relationships_batch_size = 5000  # Batch size for saving relationships
             
-            for i, level1_node in enumerate(level1_nodes):
-                vector_embedding = level1_node.get("vector_embedding", [])
-                
-                level2_nodes = await self.find_similar_level2_nodes(
-                    vector_embedding, 
-                    limit=self.max_references_per_node
-                )
-                
-                relationships = await self.create_cross_level_relationships(
-                    level1_node, 
-                    level2_nodes
-                )
-                
-                total_relationships.extend(relationships)
-                
-                if (i + 1) % 10 == 0 or i + 1 == len(level1_nodes):
-                    logger.info(f"Processed {i+1}/{len(level1_nodes)} Level 1 nodes")
+            logger.info(f"Starting process for {total_nodes} Level 1 nodes in {total_batches} batches")
             
-            if total_relationships:
-                logger.info(f"Found {len(total_relationships)} cross-level relationships")
-                if await self.save_relationships_to_neo4j(total_relationships):
-                    logger.info("Successfully saved cross-level relationships")
-                else:
-                    logger.error("Failed to save cross-level relationships")
-                    return False
+            # Create progress bar
+            with tqdm(total=total_nodes, desc="Processing Level 1 nodes") as pbar:
+                for batch_num in range(total_batches):
+                    # Get batch of Level 1 nodes
+                    query = f"""
+                    MATCH (n:Level1)
+                    WHERE n.vector_embedding IS NOT NULL
+                    RETURN n
+                    SKIP {offset} LIMIT {batch_size}
+                    """
+                    
+                    try:
+                        results = await self.neo4j_client.execute_query(query)
+                        level1_batch = [dict(record['n']) for record in results if 'n' in record]
+                        
+                        if not level1_batch:
+                            logger.info(f"No more Level 1 nodes to process, processed {total_processed} nodes in total")
+                            break
+                        
+                        batch_size_actual = len(level1_batch)
+                        logger.info(f"Processing batch {batch_num+1}/{total_batches}: {batch_size_actual} nodes (offset: {offset})")
+                        batch_relationships = []
+                        
+                        # Process each node in this batch
+                        for i, level1_node in enumerate(level1_batch):
+                            vector_embedding = level1_node.get("vector_embedding", [])
+                            
+                            level2_nodes = await self.find_similar_level2_nodes(
+                                vector_embedding, 
+                                limit=self.max_references_per_node
+                            )
+                            
+                            relationships = await self.create_cross_level_relationships(
+                                level1_node, 
+                                level2_nodes
+                            )
+                            
+                            batch_relationships.extend(relationships)
+                            
+                            # Update progress bar every node
+                            pbar.update(1)
+                            
+                            # Log detailed progress periodically
+                            if (i + 1) % 100 == 0:
+                                pbar.set_postfix({"batch": f"{batch_num+1}/{total_batches}", 
+                                                "rels_found": len(batch_relationships)})
+                        
+                        total_processed += batch_size_actual
+                        total_relationships.extend(batch_relationships)
+                        
+                        # Set postfix info for the progress bar to show relationship count
+                        pbar.set_postfix({"total_rels": len(total_relationships)})
+                        logger.info(f"Batch {batch_num+1} complete: Found {len(batch_relationships)} relationships, total {len(total_relationships)}")
+                        
+                        # Save relationships when we reach the threshold
+                        if len(total_relationships) >= relationships_batch_size:
+                            logger.info(f"Saving batch of {len(total_relationships)} relationships to Neo4j")
+                            save_success = await self.save_relationships_to_neo4j(total_relationships)
+                            if save_success:
+                                logger.info(f"Successfully saved {len(total_relationships)} relationships")
+                                total_relationships = []  # Clear after saving
+                            else:
+                                logger.error(f"Failed to save batch of relationships")
+                                return False
+                        
+                        # Move to next batch
+                        offset += batch_size
+                        
+                        # Optional: Add a small delay to reduce database load
+                        await asyncio.sleep(0.1)
+                        
+                    except Exception as e:
+                        logger.error(f"Error processing batch {batch_num+1}: {str(e)}")
+                        offset += batch_size  # Skip problematic batch and continue
+                        # Update progress bar for skipped nodes
+                        pbar.update(batch_size)
+                
+                # Save any remaining relationships
+                if total_relationships:
+                    logger.info(f"Saving final batch of {len(total_relationships)} relationships to Neo4j")
+                    if await self.save_relationships_to_neo4j(total_relationships):
+                        logger.info(f"Successfully saved final batch of relationships")
+                    else:
+                        logger.error(f"Failed to save final batch of relationships")
+                        return False
             
+            # Get final stats
             stats = await self.neo4j_client.get_graph_statistics()
-            logger.info(f"Cross-level relationships: {stats.get('cross_level_relationships', 0)}")
+            logger.info(f"Process complete. Cross-level relationships: {stats.get('cross_level_relationships', 0)}")
             
             return True
         except Exception as e:

@@ -131,3 +131,6 @@ eval/data/*
 test/*
 data/*
 commands.ipynb
+qdrant_storage/*
+path/*
+app/digest.txt

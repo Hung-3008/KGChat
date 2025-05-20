@@ -18,6 +18,9 @@ Focus on:
 6. Geographical and population information
 
 Important: Descriptions should use language directly from the text where available, preserving the original medical context and terminology. For statistical findings, include the exact values (AOR, CI, percentages) from the text.
+Imortant: 
+- Do not extract person information, such as names, addresses, or any other personal identifiers.
+- Do not extract any information that is not related to the medical field.
 
 Return all entities organized by type.
 """

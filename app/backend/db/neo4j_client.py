@@ -345,7 +345,6 @@ class Neo4jClient:
                 
                 # Clean relationships for Neo4j compatibility
                 cleaned_batch = self._clean_relationship_properties(batch)
-                
                 # Group by relationship type for better performance
                 relationships_by_type = {}
                 for rel in cleaned_batch:
@@ -353,21 +352,42 @@ class Neo4jClient:
                     if rel_type not in relationships_by_type:
                         relationships_by_type[rel_type] = []
                     relationships_by_type[rel_type].append(rel)
-                
+
                 # Process each relationship type in a separate query
                 for rel_type, type_batch in relationships_by_type.items():
                     # Use APOC for bulk imports if available, otherwise use standard Cypher
-                    # Here we use MERGE directly and let Neo4j handle existence checking
-                    import_query = """
-UNWIND $relationships AS rel
-MATCH (source:{source_label} {{entity_id: rel.source_id}}), 
-    (target:{target_label} {{entity_id: rel.target_id}})
-MERGE (source)-[r:{relationship_type}]->(target)
-""".format(
-    source_label=source_label, 
-    target_label=target_label, 
-    relationship_type=rel_type
-)
+                    import_query = f"""
+                    UNWIND $relationships AS rel
+                    MATCH (source:{source_label} {{entity_id: rel.source_id}})
+                    MATCH (target:{target_label} {{entity_id: rel.target_id}})
+                    MERGE (source)-[r:{rel_type}]->(target)
+                    ON CREATE SET r = rel, r._imported_at = timestamp()
+                    ON MATCH SET r = rel, r._updated_at = timestamp()
+                    RETURN count(r) as count
+                    """
+                
+#                 # Group by relationship type for better performance
+#                 relationships_by_type = {}
+#                 for rel in cleaned_batch:
+#                     rel_type = rel.get('type', 'RELATES_TO')
+#                     if rel_type not in relationships_by_type:
+#                         relationships_by_type[rel_type] = []
+#                     relationships_by_type[rel_type].append(rel)
+                
+#                 # Process each relationship type in a separate query
+#                 for rel_type, type_batch in relationships_by_type.items():
+#                     # Use APOC for bulk imports if available, otherwise use standard Cypher
+#                     # Here we use MERGE directly and let Neo4j handle existence checking
+#                     import_query = """
+# UNWIND $relationships AS rel
+# MATCH (source:{source_label} {{entity_id: rel.source_id}}), 
+#     (target:{target_label} {{entity_id: rel.target_id}})
+# MERGE (source)-[r:{relationship_type}]->(target)
+# """.format(
+#     source_label=source_label, 
+#     target_label=target_label, 
+#     relationship_type=rel_type
+# )              
                     
                     try:
                         if self.use_async:

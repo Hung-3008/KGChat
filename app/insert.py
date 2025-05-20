@@ -31,8 +31,8 @@ vector_db_client = VectorDBClient(
 
 ollama_client = OllamaClient()
 
-input_dir = '/home/hung/Documents/hung/code/KG_Hung/KGChat/data/test_import'
-db_path = 'docs/input_2/umls.db'
+input_dir = '/home/hung/Documents/hung/code/KG_Hung/KGChat/data/level_1'
+db_path = '/home/hung/Documents/hung/code/KG_Hung/KGChat/data/level_2/umls.db'
 
 async def main(level=1, clear_existing=True):
 
@@ -45,7 +45,7 @@ async def main(level=1, clear_existing=True):
             neo4j_password=neo4j_password, 
             clear_existing=clear_existing,
             embedding_model=embedding,
-            save_batch_size=2,
+            save_batch_size=15,
             qdrant_host=qdrant_host,
             gemini_api_key=gemini_api_key,
         )
@@ -74,4 +74,4 @@ async def main(level=1, clear_existing=True):
     
 
 if __name__ == "__main__":
-    asyncio.run(main(level=1, clear_existing=True))
+    asyncio.run(main(level=3, clear_existing=True))
