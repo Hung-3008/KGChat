@@ -1,0 +1,28 @@
+{
+  "timestamp": "2025-05-20T13:32:38.198405",
+  "test_name": "knowledge_graph_retrieval",
+  "query": "What are the latest treatments for diabetes?",
+  "result": {
+    "level1_count": 0,
+    "level2_count": 0,
+    "relationship_count": 0,
+    "intent": "DIABETES_RELATED",
+    "retrieval_time": 0.11138200759887695
+  },
+  "metadata": {
+    "high_level_keywords": [
+      "Diabetes treatments",
+      "Medical advancements",
+      "Diabetes management"
+    ],
+    "low_level_keywords": [
+      "New therapies",
+      "Medications",
+      "Insulin",
+      "Technology",
+      "Research"
+    ],
+    "analysis_time": 1.8692407608032227
+  },
+  "knowledge_graph_context": "# KEY CONCEPTS\n\n# RELATIONSHIPS\n\n# DETAILED INFORMATION\n\n"
+}

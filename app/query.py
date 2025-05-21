@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 from backend.llm.gemini_client import GeminiClient
 from backend.core.retrieval.query_analyzer import analyze_query
 from backend.core.retrieval.keyword_extractor import extract_keywords
+
 from backend.db.neo4j_client import Neo4jClient
 from backend.db.vector_db import VectorDBClient
 from backend.llm.ollama_client import OllamaClient
@@ -18,9 +19,12 @@ async def initialize_clients():
     gemini_api_key = os.getenv("GEMINI_API_KEY_5")
     gemini = GeminiClient(api_key=gemini_api_key, model_name="gemini-2.0-flash")
     
-    neo4j_uri = os.getenv('NEO4J_URI')
-    neo4j_username = os.getenv('NEO4J_USERNAME')
-    neo4j_password = os.getenv('NEO4J_PASSWORD')
+    # neo4j_uri = os.getenv('NEO4J_URI')
+    # neo4j_username = os.getenv('NEO4J_USERNAME')
+    # neo4j_password = os.getenv('NEO4J_PASSWORD')
+    neo4j_uri = "bolt://localhost:7687"
+    neo4j_username = "neo4j"
+    neo4j_password = "12345678"
     qdrant_host = os.getenv("QDRANT_HOST", "localhost")
     qdrant_port = int(os.getenv("QDRANT_PORT", "6333"))
     

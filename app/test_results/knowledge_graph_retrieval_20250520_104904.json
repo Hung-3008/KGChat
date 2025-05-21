@@ -1,0 +1,25 @@
+{
+  "timestamp": "2025-05-20T10:49:04.234368",
+  "test_name": "knowledge_graph_retrieval",
+  "query": "What are the symptoms of type 2 diabetes?",
+  "result": {
+    "level1_count": 0,
+    "level2_count": 0,
+    "relationship_count": 0
+  },
+  "metadata": {
+    "high_level_keywords": [
+      "Type 2 Diabetes",
+      "Disease Symptoms",
+      "Health Issues"
+    ],
+    "low_level_keywords": [
+      "Increased thirst",
+      "Frequent urination",
+      "Unexplained weight loss",
+      "Blurred vision",
+      "Slow-healing sores"
+    ]
+  },
+  "knowledge_graph_context": "# KEY CONCEPTS\n\n# RELATIONSHIPS\n\n# DETAILED INFORMATION\n\n"
+}

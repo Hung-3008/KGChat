@@ -1,0 +1,28 @@
+{
+  "timestamp": "2025-05-20T13:32:34.201596",
+  "test_name": "knowledge_graph_retrieval",
+  "query": "What causes gestational diabetes?",
+  "result": {
+    "level1_count": 0,
+    "level2_count": 0,
+    "relationship_count": 0,
+    "intent": "DIABETES_RELATED",
+    "retrieval_time": 0.10859513282775879
+  },
+  "metadata": {
+    "high_level_keywords": [
+      "Gestational diabetes",
+      "Pregnancy complications",
+      "Maternal health"
+    ],
+    "low_level_keywords": [
+      "Hormones",
+      "Insulin resistance",
+      "Placenta",
+      "Blood sugar",
+      "Glucose metabolism"
+    ],
+    "analysis_time": 2.0063016414642334
+  },
+  "knowledge_graph_context": "# KEY CONCEPTS\n\n# RELATIONSHIPS\n\n# DETAILED INFORMATION\n\n"
+}
