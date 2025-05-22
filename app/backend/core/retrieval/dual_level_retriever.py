@@ -18,6 +18,7 @@ from backend.db.neo4j_client import Neo4jClient
 from backend.db.vector_db import VectorDBClient
 from backend.utils.logging import get_logger
 from backend.core.pipeline.gemini.prompts import PROMPTS
+from sklearn.metrics.pairwise import cosine_similarity
 
 logger = get_logger(__name__)
 
@@ -428,7 +429,8 @@ async def retrieve_node_relationships(
                         "entity_id": target_id,
                         "name": record.get('target_name', 'Unknown'),
                         "entity_type": record.get('target_type', 'CONCEPT'),
-                        "description": record.get('target_description', '')
+                        "description": record.get('target_description', ''),
+                        "vector_embedding": record.get('vector_embedding', []),
                     }
                     target_nodes.append(target_node)
                     unique_target_ids.add(target_id)
@@ -477,7 +479,9 @@ async def evaluate_and_expand_entities(
     expansion_width: int = 20,
     expansion_depth: int = 20,
     high_level_keywords: Optional[List[str]] = None,
-    low_level_keywords: Optional[List[str]] = None
+    low_level_keywords: Optional[List[str]] = None,
+    grounding: Optional[bool] = False
+
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Evaluate and expand entities based on the query and the retrieved knowledge graph.
@@ -543,43 +547,26 @@ async def evaluate_and_expand_entities(
                 keywords_embeddings = await ollama_client.embed(
                     high_level_keywords + low_level_keywords
                 )
-
-                # get all nodes relationships
-                level1_nodes, relationships = await retrieve_node_relationships(
+                additional_nodes, relationships = await retrieve_node_relationships(
                     source_nodes=level1_nodes,
-                    neo4j_client=neo4j_client,
-                    max_references=expansion_width
+                    neo4j_client=neo4j_client
                 )
 
-                relationship_types = [relationship["type"] for relationship in relationships]
-                unique_relationship_types = set(relationship_types)
-                relationships_type_embeddings = await ollama_client.embed(
-                    list(unique_relationship_types)
-                )
-
-                # TODO: Implement the logic to expand level1 nodes based on the relationships embbeddings, prioritize nodes whose relationship's embedding is close to the embedding of the keywords
-                # Calculate the similarity between the keywords embeddings and the relationships embeddings
-                similarities = []
-                for relationship_embedding in relationships_type_embeddings:
-                    similarity = 1 - spatial.distance.cosine(keywords_embeddings, relationship_embedding)
-                    similarities.append(similarity)
-
-                top_similar_indices = np.argsort(similarities)[-expansion_width:]
-
-                expanded_level1_nodes = []
-                for index in top_similar_indices:
-                    relationship = relationships[index]
-                    source_node = relationship["source_node"]
-                    target_node = relationship["target_node"]
-                    if target_node not in level1_nodes:
-                        expanded_level1_nodes.append(target_node)
-
-                level1_nodes.extend(expanded_level1_nodes)
-                relationships.extend(await retrieve_node_relationships(
-                    source_nodes=expanded_level1_nodes,
-                    neo4j_client=neo4j_client,
-                    max_references=expansion_width
-                ))
+                for key in keywords_embeddings:
+                    similarities = cosine_similarity(
+                        np.array(key).reshape(1, -1),
+                        np.array([node['vector_embedding'] for node in additional_nodes]).reshape(1, -1)
+                    )
+                    top_indices = np.argsort(similarities[0])[-expansion_width:]
+                    
+                    for index in top_indices:
+                        additional_node = additional_nodes[index]
+                        if additional_node not in level1_nodes:
+                            level1_nodes.append(additional_node)
+                            relationships.extend(await retrieve_node_relationships(
+                                source_nodes=[additional_node],
+                                neo4j_client=neo4j_client
+                            ))
             iteration += 1
 
         except Exception as e:
@@ -602,20 +589,183 @@ async def evaluate_and_expand_entities(
             evaluation_response = await gemini_client.generate(prompt=evaluation_prompt, format=EvaluationResult)
             evaluation_response = evaluation_response[0]
             if evaluation_response.is_sufficient:
-                logger.info(f"Final evaluation: {evaluation_response.message}")
+                logger.info(f"Final evaluation: {evaluation_response.message[:150]}")
             else:
-                internet_searched = await gemini_client.grounding(query)
-                internet_searched = internet_searched['message']['content']
-                additional_info = f"## Additional information:\n{internet_searched}"
-                triplets = triplets + "\n\n ## Additional information:" + internet_searched
-                evaluation_response = await gemini_client.generate(prompt=triplets)
-                logger.info(f"Final evaluation: {evaluation_response['message']['content']}")
+                if grounding:
+                    internet_searched = await gemini_client.grounding(query)
+                    internet_searched = internet_searched['message']['content']
+                    additional_info = f"## Additional information:\n{internet_searched}"
+                    triplets = triplets + "\n\n ## Additional information:" + internet_searched
+                    evaluation_response = await gemini_client.generate(prompt=triplets)
+                    logger.info(f"Final evaluation: {evaluation_response['message']['content']}")
+                else:
+                    logger.info(f"Final evaluation: {evaluation_response.message[:150]}")
                 
 
         except Exception as e:
             logger.error(f"Error in final evaluation: {str(e)}")
 
     return level1_nodes, level2_nodes, additional_info
+    #return keywords_embeddings, additional_level1_nodes, relationships
+
+
+# async def evaluate_and_expand_entities(
+#     query: str,
+#     level1_nodes: List[Dict[str, Any]],
+#     level2_nodes: List[Dict[str, Any]],
+#     relationships: List[Dict[str, Any]],
+#     neo4j_client: Neo4jClient,
+#     ollama_client: Any,
+#     qdrant_client: Any,
+#     gemini_client: Any,
+#     min_level1_nodes: int = 5,
+#     min_level2_nodes: int = 5,
+#     max_iterations: int = 2,
+#     similarity_threshold: float = 0.7,
+#     expansion_width: int = 20,
+#     expansion_depth: int = 20,
+#     high_level_keywords: Optional[List[str]] = None,
+#     low_level_keywords: Optional[List[str]] = None
+# ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+#     """
+#     Evaluate and expand entities based on the query and the retrieved knowledge graph.
+
+#     Args:
+#         query: User query to evaluate against
+#         level1_nodes: List of Level 1 node dictionaries
+#         level2_nodes: List of Level 2 node dictionaries
+#         relationships: List of relationship dictionaries
+#         neo4j_client: Neo4j database client
+#         ollama_client: Ollama client for embeddings generation
+#         qdrant_client: Vector database client
+#         gemini_client: Gemini client for evaluation
+#         min_level1_nodes: Minimum number of Level 1 nodes required
+#         min_level2_nodes: Minimum number of Level 2 nodes required
+#         max_iterations: Maximum number of expansion iterations
+#         similarity_threshold: Threshold for similarity search
+#         expansion_width: Maximum width for Level 1 node expansion
+#         expansion_depth: Maximum depth for Level 2 node expansion
+
+#     Returns:
+#         Tuple of expanded Level 1 and Level 2 nodes
+#     """
+#     current_level1_count = len(level1_nodes)
+#     current_level2_count = len(level2_nodes)
+#     iteration = 0
+
+#     while iteration < max_iterations:
+#         # Format triplets for evaluation
+#         triplets = format_triplets_for_evaluation(
+#             level1_nodes,
+#             level2_nodes,
+#             relationships
+#         )
+
+#         evaluation_prompt = PROMPTS["evaluate_information"].format(
+#             query=query,
+#             triplets=triplets
+#         )
+
+#         try:
+#             # evaluation_response = await gemini_client.generate(prompt=evaluation_prompt)
+#             # if isinstance(evaluation_response, dict) and "message" in evaluation_response:
+#             #     response_text = evaluation_response["message"]["content"]
+#             #     is_sufficient = "yes" in response_text.lower()
+#             # else:
+#             #     is_sufficient = False
+
+#             # if is_sufficient:
+#             #     logger.info(
+#             #         f"Enough information found after {iteration} iterations")
+#             #     break
+
+#             # logger.info(
+#             #     f"Insufficient information found. Expanding knowledge graph")
+
+#             # Generate embeddings from query for expansion
+            
+#             # Generate embeddings from query
+#             logger.info(
+#                 f"Generating embeddings from query for Level 1 node expansion")
+            
+#             keywords = high_level_keywords + low_level_keywords
+#             keywords_embeddings = await ollama_client.embed(
+#                 keywords
+#             )
+
+#             # get all nodes relationships
+#             additional_level1_nodes, relationships = await retrieve_node_relationships(
+#                 source_nodes=level1_nodes,
+#                 neo4j_client=neo4j_client,
+#                 max_references=expansion_width
+#             )
+
+#             relationship_types = [relationship["type"] for relationship in relationships]
+#             relationships_type_embeddings = await ollama_client.embed(relationship_types)
+
+#             # Calculate the similarity between the keywords embeddings and the relationships embeddings
+#             similarities = []
+#             for relationship_embedding in relationships_type_embeddings:
+#                 similarity = 1 - spatial.distance.cosine(keywords_embeddings, relationship_embedding)
+#                 similarities.append(similarity)
+
+#             top_similar_indices = np.argsort(similarities)[-expansion_width:]
+
+#             expanded_level1_nodes = []
+#             for index in top_similar_indices:
+#                 relationship = relationships[index]
+#                 source_node = relationship["source_node"]
+#                 target_node = relationship["target_node"]
+#                 if target_node not in level1_nodes:
+#                     expanded_level1_nodes.append(target_node)
+
+#             level1_nodes.extend(expanded_level1_nodes)
+#             relationships.extend(await retrieve_node_relationships(
+#                 source_nodes=expanded_level1_nodes,
+#                 neo4j_client=neo4j_client,
+#                 max_references=expansion_width
+#             ))
+
+
+#             iteration += 1
+#             return keywords_embeddings, additional_level1_nodes, relationships
+
+#         except Exception as e:
+#             logger.error(f"Error in evaluation and expand entities: {str(e)}")
+#             break
+
+#     # if iteration > 0:
+#     #     # Final evaluation for logging purposes
+#     #     triplets = format_triplets_for_evaluation(
+#     #         level1_nodes,
+#     #         level2_nodes,
+#     #         relationships
+#     #     )
+#     #     evaluation_prompt = PROMPTS["evaluate_information"].format(
+#     #         query=query,
+#     #         triplets=triplets
+#     #     )
+#     #     additional_info = ""
+#     #     try:
+#     #         evaluation_response = await gemini_client.generate(prompt=evaluation_prompt, format=EvaluationResult)
+#     #         evaluation_response = evaluation_response[0]
+#     #         if evaluation_response.is_sufficient:
+#     #             logger.info(f"Final evaluation: {evaluation_response.message}")
+#     #         else:
+#     #             internet_searched = await gemini_client.grounding(query)
+#     #             internet_searched = internet_searched['message']['content']
+#     #             additional_info = f"## Additional information:\n{internet_searched}"
+#     #             triplets = triplets + "\n\n ## Additional information:" + internet_searched
+#     #             evaluation_response = await gemini_client.generate(prompt=triplets)
+#     #             logger.info(f"Final evaluation: {evaluation_response['message']['content']}")
+                
+
+#     #     except Exception as e:
+#     #         logger.error(f"Error in final evaluation: {str(e)}")
+
+#     #return level1_nodes, level2_nodes, additional_info
+#     return keywords_embeddings, additional_level1_nodes, relationships
+
 
 
 def format_triplets_for_evaluation(
