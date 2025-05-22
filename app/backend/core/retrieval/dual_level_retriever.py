@@ -9,7 +9,10 @@ This module implements a two-level knowledge graph retrieval system that:
 """
 import logging
 import asyncio
+import numpy as np
+from scipy import spatial
 from typing import List, Dict, Any, Optional, Set, Union, Tuple
+from pydantic import BaseModel
 
 from backend.db.neo4j_client import Neo4jClient
 from backend.db.vector_db import VectorDBClient
@@ -63,11 +66,15 @@ async def retrieve_from_knowledge_graph(
         raise ValueError("Required clients not provided")
 
     retrieval_context = {
-        "level1_nodes": [],
-        "level2_nodes": [],
+        "high_level1_nodes": [],
+        "low_level1_nodes": [],
+        "high_level2_nodes": [],
+        "low_level2_nodes": [],
         "relationships": [],
         "sources": [],
-        "combined_text": ""
+        "high_combined_text": "",
+        "low_combined_text": "",
+
     }
 
     if not high_level_keywords and not low_level_keywords:
@@ -81,6 +88,7 @@ async def retrieve_from_knowledge_graph(
         high_embeddings = await ollama_client.embed(high_level_keywords)
         low_embeddings = await ollama_client.embed(low_level_keywords)
 
+
         # STEP 2: Retrieve High and Low Level 1 nodes
         logger.info("Retrieving high-Level 1 nodes...")
         high_level1_entities = await retrieve_level1_nodes(
@@ -91,6 +99,7 @@ async def retrieve_from_knowledge_graph(
             max_width=expansion_width,
             similarity_threshold=similarity_threshold
         )
+
         logger.info("Retrieving low-Level 1 nodes...")
         low_level1_entities = await retrieve_level1_nodes(
             embeddings=low_embeddings,
@@ -104,7 +113,7 @@ async def retrieve_from_knowledge_graph(
 
         # STEP 3: Retrieve High and Low Level 2 nodes 
         logger.info("Retriving High-Level 2 nodes...")
-        level2_entities, relationships = await retrieve_level2_references(
+        high_level2_entities, high_relationships = await retrieve_level2_references(
             level1_nodes=high_level1_entities,
             neo4j_client=neo4j_client,
             min_depth=top_k,
@@ -118,43 +127,33 @@ async def retrieve_from_knowledge_graph(
             min_depth=top_k,
             max_depth=expansion_depth
         )
-        logger.info(f"Retrieved {len(level2_entities)} high-Level 2 nodes and {len(low_level2_entities)} low-Level 2 nodes")
+        logger.info(f"Retrieved {len(high_level2_entities)} high-Level 2 nodes and {len(low_level2_entities)} low-Level 2 nodes")
 
-        # STEP 3: Retrieve Level 2 nodes
-        # logger.info("Retrieving Level 2 nodes")
-        # level2_entities, relationships = await retrieve_level2_references(
-        #     level1_nodes=level1_entities,
-        #     neo4j_client=neo4j_client,
-        #     min_depth=top_k,
-        #     max_depth=expansion_depth
-        # )
+        # Step 4: Format results
+        logger.info("Formatting retrieval results")
+        high_combined_text = format_retrieval_results(
+            level1_nodes=high_level1_entities,
+            level2_nodes=high_level2_entities,
+            relationships=high_relationships
+        )
 
-        # # STEP 4: Format results
-        # logger.info("Formatting retrieval results")
-        # combined_text = format_retrieval_results(
-        #     level1_entities,
-        #     level2_entities,
-        #     relationships
-        # )
+        low_combined_text = format_retrieval_results(
+            level1_nodes=low_level1_entities,
+            level2_nodes=low_level2_entities,
+            relationships=low_relationships
+        )
 
-        # retrieval_context.update({
-        #     "level1_nodes": level1_entities,
-        #     "level2_nodes": level2_entities,
-        #     "relationships": relationships,
-        #     "combined_text": combined_text
-        # })
+        retrieval_context.update({
+            "high_level1_nodes": high_level1_entities,
+            "low_level1_nodes": low_level1_entities,
+            "high_level2_nodes": high_level2_entities,
+            "low_level2_nodes": low_level2_entities,
+            "relationships": high_relationships + low_relationships,
+            "high_combined_text": high_combined_text,
+            "low_combined_text": low_combined_text,
+        })
 
-        # # Add validation and review if gemini_client is provided
-        # if gemini_client:
-        #     # Add validation and review results to context
-        #     retrieval_context.update({
-        #         "level1_nodes": level1_entities,
-        #         "level2_nodes": level2_entities,
-        #         "relationships": relationships,
-        #         "combined_text": combined_text,
-        #     })
-
-        # return retrieval_context
+        return retrieval_context
 
     except Exception as e:
         logger.error(f"Error during knowledge graph retrieval: {str(e)}")
@@ -375,6 +374,93 @@ def _create_relationship_data(level1_node: Dict[str, Any], level2_data: Dict[str
     }
 
 
+async def retrieve_node_relationships(
+    source_nodes: List[Dict[str, Any]],
+    neo4j_client: Neo4jClient,
+    max_references: int = 100
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Retrieve relationships and target nodes for a given list of source nodes.
+    
+    Args:
+        source_nodes: List of source node dictionaries
+        neo4j_client: Neo4j database client
+        max_references: Maximum number of references to retrieve per source node
+    
+    Returns:
+        Tuple of (target_nodes, relationships) lists
+    """
+    target_nodes = []
+    relationships = []
+    unique_target_ids = set()
+    unique_relationship_ids = set()
+    
+    try:
+        for source_node in source_nodes:
+            entity_id = source_node.get('entity_id')
+            if not entity_id:
+                continue
+            
+            # Retrieve outgoing relationships and target nodes
+            query = """
+            MATCH (source {entity_id: $entity_id})-[r]->(target)
+            RETURN 
+                type(r) as relationship_type, 
+                properties(r) as relationship_properties,
+                target.entity_id as target_id,
+                target.name as target_name,
+                target.entity_type as target_type,
+                target.description as target_description
+            LIMIT $limit
+            """
+            
+            results = await neo4j_client.execute_query(
+                query, 
+                {"entity_id": entity_id, "limit": max_references}
+            )
+            
+            for record in results:
+                # Process target node
+                target_id = record.get('target_id')
+                
+                if target_id and target_id not in unique_target_ids:
+                    target_node = {
+                        "entity_id": target_id,
+                        "name": record.get('target_name', 'Unknown'),
+                        "entity_type": record.get('target_type', 'CONCEPT'),
+                        "description": record.get('target_description', '')
+                    }
+                    target_nodes.append(target_node)
+                    unique_target_ids.add(target_id)
+                
+                # Process relationship
+                relationship_properties = record.get('relationship_properties', {})
+                relationship_type = record.get('relationship_type', 'RELATES_TO')
+                
+                relationship = {
+                    "source_id": entity_id,
+                    "target_id": target_id,
+                    "type": relationship_type,
+                    **relationship_properties
+                }
+                
+                # Generate a unique relationship ID
+                rel_id = f"{entity_id}_{target_id}_{relationship_type}"
+                if rel_id not in unique_relationship_ids:
+                    relationships.append(relationship)
+                    unique_relationship_ids.add(rel_id)
+        
+        logger.info(f"Retrieved {len(target_nodes)} unique target nodes and {len(relationships)} relationships")
+        return target_nodes, relationships
+    
+    except Exception as e:
+        logger.error(f"Error retrieving node relationships: {str(e)}")
+        return [], []
+
+class EvaluationResult(BaseModel):
+    is_sufficient: bool
+    message: str
+
 async def evaluate_and_expand_entities(
     query: str,
     level1_nodes: List[Dict[str, Any]],
@@ -386,10 +472,12 @@ async def evaluate_and_expand_entities(
     gemini_client: Any,
     min_level1_nodes: int = 5,
     min_level2_nodes: int = 5,
-    max_iterations: int = 3,
+    max_iterations: int = 2,
     similarity_threshold: float = 0.7,
     expansion_width: int = 20,
-    expansion_depth: int = 20
+    expansion_depth: int = 20,
+    high_level_keywords: Optional[List[str]] = None,
+    low_level_keywords: Optional[List[str]] = None
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Evaluate and expand entities based on the query and the retrieved knowledge graph.
@@ -451,53 +539,47 @@ async def evaluate_and_expand_entities(
                 # Generate embeddings from query
                 logger.info(
                     f"Generating embeddings from query for Level 1 node expansion")
-                query_embeddings = await ollama_client.embed([query])
-
-                additional_level1 = await retrieve_level1_nodes(
-                    embeddings=query_embeddings,
-                    qdrant_client=qdrant_client,
-                    neo4j_client=neo4j_client,
-                    min_width=min_level1_nodes - current_level1_count,
-                    max_width=expansion_width,
-                    similarity_threshold=similarity_threshold
+                
+                keywords_embeddings = await ollama_client.embed(
+                    high_level_keywords + low_level_keywords
                 )
 
-                # Add unique nodes only
-                unique_ids = {node.get("entity_id")
-                              for node in level1_nodes}
-                new_nodes = [node for node in additional_level1
-                             if node.get("entity_id") and node.get("entity_id") not in unique_ids]
-
-                level1_nodes.extend(new_nodes)
-                current_level1_count = len(level1_nodes)
-                logger.info(f"Added {len(new_nodes)} new Level 1 nodes")
-
-            if current_level2_count < min_level2_nodes:
-                additional_level2, additional_relationships = await retrieve_level2_references(
-                    level1_nodes=level1_nodes,
+                # get all nodes relationships
+                level1_nodes, relationships = await retrieve_node_relationships(
+                    source_nodes=level1_nodes,
                     neo4j_client=neo4j_client,
-                    min_depth=min_level2_nodes - current_level2_count,
-                    max_depth=expansion_depth
+                    max_references=expansion_width
                 )
 
-                # Add unique Level 2 nodes only
-                unique_level2_ids = {node.get("entity_id")
-                                     for node in level2_nodes}
-                new_level2_nodes = [node for node in additional_level2
-                                    if node.get("entity_id") and node.get("entity_id") not in unique_level2_ids]
+                relationship_types = [relationship["type"] for relationship in relationships]
+                unique_relationship_types = set(relationship_types)
+                relationships_type_embeddings = await ollama_client.embed(
+                    list(unique_relationship_types)
+                )
 
-                # Add unique relationships only
-                unique_rel_ids = {rel.get("rel_id")
-                                  for rel in relationships if rel.get("rel_id")}
-                new_relationships = [rel for rel in additional_relationships
-                                     if rel.get("rel_id") and rel.get("rel_id") not in unique_rel_ids]
+                # TODO: Implement the logic to expand level1 nodes based on the relationships embbeddings, prioritize nodes whose relationship's embedding is close to the embedding of the keywords
+                # Calculate the similarity between the keywords embeddings and the relationships embeddings
+                similarities = []
+                for relationship_embedding in relationships_type_embeddings:
+                    similarity = 1 - spatial.distance.cosine(keywords_embeddings, relationship_embedding)
+                    similarities.append(similarity)
 
-                level2_nodes.extend(new_level2_nodes)
-                relationships.extend(new_relationships)
-                current_level2_count = len(level2_nodes)
-                logger.info(
-                    f"Added {len(new_level2_nodes)} new Level 2 nodes and {len(new_relationships)} relationships")
+                top_similar_indices = np.argsort(similarities)[-expansion_width:]
 
+                expanded_level1_nodes = []
+                for index in top_similar_indices:
+                    relationship = relationships[index]
+                    source_node = relationship["source_node"]
+                    target_node = relationship["target_node"]
+                    if target_node not in level1_nodes:
+                        expanded_level1_nodes.append(target_node)
+
+                level1_nodes.extend(expanded_level1_nodes)
+                relationships.extend(await retrieve_node_relationships(
+                    source_nodes=expanded_level1_nodes,
+                    neo4j_client=neo4j_client,
+                    max_references=expansion_width
+                ))
             iteration += 1
 
         except Exception as e:
@@ -515,17 +597,25 @@ async def evaluate_and_expand_entities(
             query=query,
             triplets=triplets
         )
+        additional_info = ""
         try:
-            evaluation_response = await gemini_client.generate(prompt=evaluation_prompt)
-            if isinstance(evaluation_response, dict) and "message" in evaluation_response:
-                response_text = evaluation_response["message"]["content"]
-                logger.info(f"Final evaluation response: {response_text}")
+            evaluation_response = await gemini_client.generate(prompt=evaluation_prompt, format=EvaluationResult)
+            evaluation_response = evaluation_response[0]
+            if evaluation_response.is_sufficient:
+                logger.info(f"Final evaluation: {evaluation_response.message}")
             else:
-                logger.info("Could not get evaluation response text")
+                internet_searched = await gemini_client.grounding(query)
+                internet_searched = internet_searched['message']['content']
+                additional_info = f"## Additional information:\n{internet_searched}"
+                triplets = triplets + "\n\n ## Additional information:" + internet_searched
+                evaluation_response = await gemini_client.generate(prompt=triplets)
+                logger.info(f"Final evaluation: {evaluation_response['message']['content']}")
+                
+
         except Exception as e:
             logger.error(f"Error in final evaluation: {str(e)}")
 
-    return level1_nodes, level2_nodes
+    return level1_nodes, level2_nodes, additional_info
 
 
 def format_triplets_for_evaluation(

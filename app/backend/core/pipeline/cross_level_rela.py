@@ -129,17 +129,14 @@ class CrossLevelRelationshipBuilder:
                 UNWIND $batch AS rel
                 MATCH (source:Level1 {entity_id: rel.source_id})
                 MATCH (target:Level2 {entity_id: rel.target_id})
-                CALL {
-                    WITH source, target, rel
-                    MERGE (source)-[r:REFERENCES]->(target)
-                    ON CREATE SET r.similarity_score = rel.similarity_score,
-                                r.created_at = timestamp()
-                    ON MATCH SET r.similarity_score = CASE 
-                        WHEN rel.similarity_score > r.similarity_score THEN rel.similarity_score
-                        ELSE r.similarity_score
-                    END,
-                    r.updated_at = timestamp()
-                }
+                MERGE (source)-[r:REFERENCES]->(target)
+                ON CREATE SET r.similarity_score = rel.similarity_score,
+                            r.created_at = timestamp()
+                ON MATCH SET r.similarity_score = CASE 
+                    WHEN rel.similarity_score > r.similarity_score THEN rel.similarity_score
+                    ELSE r.similarity_score
+                END,
+                r.updated_at = timestamp()
                 """
                 
                 try:

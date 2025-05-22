@@ -2,32 +2,33 @@ from __future__ import annotations
 from typing import Any
 
 GEMINI_ENTITY_EXTRACTION_PROMPT = """
-Extract comprehensive medical entities from the provided research text. For each entity, include:
+---Goal---
+You are an expert knowledge graph builder tasked with extracting a structured representation of entities and relationships from the provided text. The extracted information will be used to construct a knowledge graph with two distinct levels.
 
-- entity_id: Standardized name
-- entity_type: Category (Condition, Procedure, Factor, etc.)
-- description: Extract exact descriptions from the text where possible, otherwise provide a concise definition based on context
-- knowledge_level: General (1) or specific (2)
+---Instructions---
+Analyze the provided text and identify:
 
-Focus on:
-1. Medical conditions and diseases
-2. Diagnostic and screening procedures
-3. Risk factors and demographics
-4. Statistical findings with values (prevalence, ORs, CIs)
-5. Study methods and designs
-6. Geographical and population information
+1. All significant entities with these attributes:
+   - entity_name: Unique identifier for the entity (use the entity's name)
+   - entity_type: A short name for the entity type (e.g., MEDICATION, CONDITION, SYMPTOM, etc.)
+   - entity_description: A description of the entity using information from the text
 
-Important: Descriptions should use language directly from the text where available, preserving the original medical context and terminology. For statistical findings, include the exact values (AOR, CI, percentages) from the text.
-Imortant: 
-- Do not extract person information, such as names, addresses, or any other personal identifiers.
-- Do not extract any information that is not related to the medical field.
+2. All meaningful relationships between the identified entities:
+   - source_entity: Name of the source entity (must match an entity_name you identified)
+   - target_entity: Name of the target entity (must match an entity_name you identified) 
+   - relationship_type: Type of relationship (e.g., TREATS, CAUSES, PART_OF, RELATED_TO, etc.)
+   - relationship_description: Clear description of how the entities are related
 
-Return all entities organized by type.
+---Important Notes---
+- Be comprehensive but precise - identify all significant entities and meaningful relationships
+- Ensure all relationship endpoints refer to entities that exist in your entities list
+- Do not create relationships between entities not present in the text
+- Maintain consistent naming of entities across your response
+
+___Input Text___
+{input}
+
 """
-
-
-
-
 
 
 GRAPH_FIELD_SEP = "<SEP>"
@@ -39,8 +40,70 @@ PROMPTS["DEFAULT_TUPLE_DELIMITER"] = "<|>"
 PROMPTS["DEFAULT_RECORD_DELIMITER"] = "##"
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 
-PROMPTS["DEFAULT_ENTITY_TYPES"] = ["organization", "person", "geo", "event", "category"]
+PROMPTS["DEFAULT_ENTITY_TYPES"] = [
+    "organization", "person", "geo", "event", "category"]
 
+# PROMPTS["entity_extraction"] = """---Goal---
+# Given a text document that is potentially relevant to this activity and a list of entity types, identify all entities of those types from the text and all relationships among the identified entities.
+# Use {language} as output language.
+
+# ---Steps---
+# 1. Identify all entities. For each identified entity, extract the following information:
+# - entity_name: Name of the entity, use same language as input text. If English, capitalized the name.
+# - entity_type: One of the following types: [{entity_types}]
+# - entity_description: Comprehensive description of the entity's attributes and activities
+# Format each entity as ("entity"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>)
+
+# 2. From the entities identified in step 1, identify all pairs of (source_entity, target_entity) that are *clearly related* to each other.
+# For each pair of related entities, extract the following information:
+# - source_entity: name of the source entity, as identified in step 1
+# - target_entity: name of the target entity, as identified in step 1
+# - relationship_description: explanation as to why you think the source entity and the target entity are related to each other
+# - relationship_strength: a numeric score indicating strength of the relationship between the source entity and target entity
+# - relationship_keywords: one or more high-level key words that summarize the overarching nature of the relationship, focusing on concepts or themes rather than specific details
+# Format each relationship as ("relationship"{tuple_delimiter}<source_entity>{tuple_delimiter}<target_entity>{tuple_delimiter}<relationship_description>{tuple_delimiter}<relationship_keywords>{tuple_delimiter}<relationship_strength>)
+
+# 3. Identify high-level key words that summarize the main concepts, themes, or topics of the entire text. These should capture the overarching ideas present in the document.
+# Format the content-level key words as ("content_keywords"{tuple_delimiter}<high_level_keywords>)
+
+# 4. Translate output in {language} as a single list of all the entities and relationships identified in steps 1 and 2, ensure all entiy and relationship in {language}.
+
+
+# Use **{record_delimiter}** as the list delimiter.
+# ######################
+# ---Examples---
+# ######################
+# {examples}
+
+# #############################
+# ---Output Format---
+# #############################
+# Json:
+#     entities: List of entity
+#     relationships: List of relationship
+
+# Entity:
+#     entity_name: str
+#     entity_type: str
+#     entity_description: str
+
+
+# Relationship:
+#     source_entity: str
+#     target_entity: str
+#     description: str
+#     strength: float
+#     keywords: List[str]
+
+
+# ---Real Data---
+# ######################
+# Entity_types: [{entity_types}]
+
+# ######################
+# INPUT Text:
+# {input_text}
+# """
 
 PROMPTS["personal_info_extraction"] = """
 Extract all personal information from the following message.
@@ -531,7 +594,6 @@ When handling information with timestamps:
 - Do not include information not provided by the Data Sources."""
 
 
-
 """
 Custom prompts for knowledge graph query processing.
 
@@ -595,21 +657,121 @@ Generate a concise response based on Data Sources and follow Response Rules, con
 }
 
 # Add a function to get the updated prompts
+
+
 def get_updated_prompts(original_prompts):
     """
     Update the original prompts with the custom prompts.
-    
+
     Args:
         original_prompts: Original prompts dictionary
-        
+
     Returns:
         Updated prompts dictionary
     """
     # Create a copy of the original prompts
     updated_prompts = dict(original_prompts)
-    
+
     # Update with custom prompts
     for key, value in CUSTOM_PROMPTS.items():
         updated_prompts[key] = value
-    
+
     return updated_prompts
+
+
+########################################################
+# Score entity candidates prompt
+PROMPTS["score_entity_candidates"] = """Please score the entities' contribution to the question on a scale from 0 to 1 (the sum of the scores of all entities is 1).
+Q: What medications are commonly prescribed for Type 2 diabetes?
+Relation: disease.medications
+Entities: Metformin; Insulin; Sulfonylureas; DPP-4 inhibitors; GLP-1 receptor agonists; SGLT2 inhibitors
+Score: 0.3, 0.2, 0.2, 0.1, 0.1, 0.1
+Metformin is the most commonly prescribed first-line medication for Type 2 diabetes, followed by Insulin and Sulfonylureas. Therefore, Metformin gets the highest score.
+
+Q: {query}
+Relation: {relation}
+Entities: {entities}"""
+
+# Evaluate information sufficiency prompt
+PROMPTS["evaluate_information"] = """Given a question and the associated retrieved knowledge graph triplets (entity, relation, entity), you are asked to answer whether it's sufficient for you to answer the question with these triplets and your knowledge (Yes or No).
+
+Q: What are the recommended dietary changes for managing Type 2 diabetes?
+Knowledge Triplets: 
+Type 2 Diabetes, disease.dietary_recommendations, Reduce carbohydrate intake
+Type 2 Diabetes, disease.dietary_recommendations, Increase fiber consumption
+Type 2 Diabetes, disease.dietary_recommendations, Limit processed foods
+A: Yes. The given knowledge triplets provide sufficient information about the recommended dietary changes for managing Type 2 diabetes, including reducing carbohydrate intake, increasing fiber consumption, and limiting processed foods.
+
+Q: What are the long-term complications of Type 2 diabetes?
+Knowledge Triplets: 
+Type 2 Diabetes, disease.complications, Heart disease
+Type 2 Diabetes, disease.complications, Kidney damage
+A: No. While the given knowledge triplets mention some complications (heart disease and kidney damage), they don't provide a comprehensive list of all possible long-term complications of Type 2 diabetes, such as nerve damage, eye problems, and foot complications.
+
+Q: {query}
+Knowledge Triplets: {triplets}"""
+
+
+# Validator prompt
+PROMPTS["validator"] = """You are a medical information validator. Evaluate whether the provided information is accurate and sufficient for the given diabetes-related question.
+
+Question: {query}
+Query Intent: {intent}
+Retrieved Information: {retrieved_info}
+Ground Truth: {ground_truth}
+Task: Is the retrieved information accurate and sufficient? Answer with Yes or No, followed by a brief explanation."""
+
+# Commentor prompt
+PROMPTS["commentor"] = """You are a specialized diabetes information assistant. Review and provide feedback on the extracted information from the question.
+
+Question: {query}
+Query Intent: {intent}
+High Level Keywords: {high_level_keywords}
+Low Level Keywords: {low_level_keywords}
+Retrieved Level 1 Nodes: {level1_nodes}
+Retrieved Level 2 Nodes: {level2_nodes}
+
+Task: Please identify any issues with:
+1. Query Intent Classification: Is it correctly classified?
+2. High Level Keywords: Are they correctly identified and relevant?
+3. Low Level Keywords: Are they correctly identified and specific enough?
+4. Level 1 Nodes: Are they relevant to the question?
+5. Level 2 Nodes: Do they provide sufficient detail?
+
+Provide specific feedback for each aspect that needs improvement."""
+
+# Generator prompt
+PROMPTS["generator"] = """You are a specialized diabetes information assistant. Generate a comprehensive, evidence-based response to the user's diabetes-related query.
+
+Question: {query}
+Query Intent: {intent}
+Retrieved Information: {retrieved_info}
+Knowledge Graph Context: {kg_context}
+Latest Research: {latest_research}
+
+Instructions:
+1. Synthesize information from all available sources
+2. Prioritize evidence-based medical information
+3. Include relevant clinical guidelines when applicable
+4. Note any limitations or uncertainties
+5. Format the response clearly with appropriate medical terminology
+6. Include relevant statistics or research findings when available
+
+Generate a well-structured, informative response."""
+
+# Evaluator prompt
+PROMPTS["evaluator"] = """You are a medical information evaluator. Assess the quality and accuracy of the generated response for a diabetes-related question.
+
+Question: {query}
+Query Intent: {intent}
+Generated Response: {response}
+Ground Truth: {ground_truth}
+
+Evaluation Criteria:
+1. Medical Accuracy (0-1)
+2. Completeness (0-1)
+3. Clarity (0-1)
+4. Evidence-based (0-1)
+5. Patient-friendly (0-1)
+
+Task: Evaluate the response based on these criteria and provide a brief explanation for each score."""
