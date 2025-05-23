@@ -10,8 +10,8 @@ import asyncio
 import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+from datetime import datetime
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -28,7 +28,7 @@ from app.backend.llm.gemini_client import GeminiClient
 API_URL = "http://localhost:8000/api/query"
 
 class EvaluationResult(BaseModel):
-    is_correct: int = Field(description="1 if the model's answer is correct, 0 if incorrect")
+    is_correct: int = Field()
 
 class GeminiKeyManager:
     def __init__(
@@ -43,7 +43,6 @@ class GeminiKeyManager:
         self.logger = logging.getLogger(__name__)
     
     def get_current_key(self) -> str:
-        """Get the current API key"""
         key_name = self.key_pattern.format(self.current_key_index)
         api_key = os.getenv(key_name)
         
@@ -54,7 +53,6 @@ class GeminiKeyManager:
         return api_key
     
     def rotate_key(self) -> str:
-        """Rotate to the next available API key"""
         for _ in range(self.max_keys):
             self.current_key_index = (self.current_key_index % self.max_keys) + 1
             
@@ -69,10 +67,6 @@ class GeminiKeyManager:
         return None
 
 async def evaluate_answer(gemini_client, key_manager, question, correct_answer, model_answer):
-    """
-    Use Gemini to evaluate if the model's answer matches the correct answer.
-    Includes key rotation if API errors occur.
-    """
     prompt = f"""
     You are an evaluation system for multiple-choice answers. 
     
@@ -115,7 +109,6 @@ async def evaluate_answer(gemini_client, key_manager, question, correct_answer, 
             logger.error(f"Error during evaluation (attempt {attempt+1}/{max_retries}): {str(e)}")
             
             if attempt < max_retries - 1:
-                # Rotate API key for the next attempt
                 new_key = key_manager.rotate_key()
                 if new_key:
                     gemini_client.api_key = new_key
@@ -125,10 +118,8 @@ async def evaluate_answer(gemini_client, key_manager, question, correct_answer, 
                     logger.error("No more API keys available to try")
                     break
                 
-                # Wait before retrying
                 await asyncio.sleep(2)
     
-    # After all retries failed
     logger.warning("All evaluation attempts failed")
     return 0
 
@@ -175,38 +166,31 @@ def ask_question(question, response_type="concise"):
         return f"Error: {str(e)}"
 
 def create_excel_with_formatting(df, output_path):
-    """
-    Create an Excel file with formatting from a DataFrame
-    """
-    # Create Excel writer and write DataFrame to it
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    
     writer = pd.ExcelWriter(output_path, engine='openpyxl')
     df.to_excel(writer, index=False, sheet_name='Evaluation Results')
     
-    # Access the workbook and worksheet objects
     workbook = writer.book
     worksheet = writer.sheets['Evaluation Results']
     
-    # Define styles
     header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
     header_font = Font(color="FFFFFF", bold=True)
     correct_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
     incorrect_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
     
-    # Set column widths
-    worksheet.column_dimensions['A'].width = 15  # Question column
-    worksheet.column_dimensions['B'].width = 25  # Correct answer column
-    worksheet.column_dimensions['C'].width = 25  # Model answer column
-    worksheet.column_dimensions['D'].width = 15  # Is correct column
+    worksheet.column_dimensions['A'].width = 15
+    worksheet.column_dimensions['B'].width = 25
+    worksheet.column_dimensions['C'].width = 25
+    worksheet.column_dimensions['D'].width = 15
     
-    # Apply header formatting
     for col_num, column_title in enumerate(df.columns, 1):
         cell = worksheet.cell(row=1, column=col_num)
         cell.fill = header_fill
         cell.font = header_font
         
-    # Apply conditional formatting to is_correct column
-    for row_num, value in enumerate(df['is_correct'], 2):  # Start from row 2 (after header)
-        cell = worksheet.cell(row=row_num, column=4)  # is_correct column
+    for row_num, value in enumerate(df['is_correct'], 2):
+        cell = worksheet.cell(row=row_num, column=4)
         if value == 1:
             cell.fill = correct_fill
             cell.value = "1"
@@ -214,15 +198,11 @@ def create_excel_with_formatting(df, output_path):
             cell.fill = incorrect_fill
             cell.value = "0"
     
-    # Save the workbook
     writer.close()
     
     logger.info(f"Excel file created at {output_path} with formatting")
 
 async def process_dataset(dataset, gemini_client, key_manager, num_samples=None, batch_size=100, save_prefix='diabetes_mc_results'):
-    """
-    Process the dataset with built-in key rotation for API errors.
-    """
     results = []
     
     total_examples = len(dataset['input'])
@@ -230,8 +210,13 @@ async def process_dataset(dataset, gemini_client, key_manager, num_samples=None,
     
     logger.info(f"Starting processing of {examples_to_process} questions")
     
-    # Create batches directory if it doesn't exist
-    os.makedirs("eval/batches", exist_ok=True)
+    # Create output directories
+    now = datetime.now()
+    date_str = now.strftime("%Y_%m_%d")
+    time_str = now.strftime("%H_%M_%S")
+    
+    batch_dir = f"eval/batches/{date_str}/{time_str}"
+    os.makedirs(batch_dir, exist_ok=True)
     
     for i in range(examples_to_process):
         question = dataset['input'][i]
@@ -242,7 +227,6 @@ async def process_dataset(dataset, gemini_client, key_manager, num_samples=None,
         model_answer = ask_question(question)
         logger.debug(f"Model answered: {model_answer}")
         
-        # Use evaluate_answer with key manager for automatic key rotation
         is_correct = await evaluate_answer(
             gemini_client, 
             key_manager, 
@@ -258,13 +242,11 @@ async def process_dataset(dataset, gemini_client, key_manager, num_samples=None,
             'is_correct': is_correct
         })
         
-        # Save batches periodically to avoid losing progress
         if (i + 1) % batch_size == 0 or i == examples_to_process - 1:
             batch_number = (i + 1) // batch_size if (i + 1) % batch_size == 0 else ((i + 1) // batch_size) + 1
             batch_df = pd.DataFrame(results)
-            batch_filename = f"eval/batches/{save_prefix}_batch_{batch_number}.xlsx"
+            batch_filename = f"{batch_dir}/{save_prefix}_batch_{batch_number}.xlsx"
             
-            # Save with formatting
             create_excel_with_formatting(batch_df, batch_filename)
             logger.info(f"Saved batch {batch_number} with {len(batch_df)} questions to {batch_filename}")
         
@@ -279,7 +261,6 @@ async def main():
     from dotenv import load_dotenv
     load_dotenv()
     
-    # Initialize key manager
     key_manager = GeminiKeyManager(current_key_index=4, max_keys=6)
     api_key = key_manager.get_current_key()
     
@@ -301,10 +282,15 @@ async def main():
         logger.error(f"Failed to load dataset: {str(e)}")
         return
     
-    # Create eval directory if it doesn't exist
-    os.makedirs("eval", exist_ok=True)
+    # Create output directories with date and time
+    now = datetime.now()
+    date_str = now.strftime("%Y_%m_%d")
+    time_str = now.strftime("%H_%M_%S")
     
-    num_samples = 2 
+    output_dir = f"eval/multiple_choice/{date_str}/{time_str}"
+    os.makedirs(output_dir, exist_ok=True)
+    
+    num_samples = 1500 
     logger.info(f"Will process {num_samples} samples")
     
     results_df = await process_dataset(
@@ -317,8 +303,9 @@ async def main():
     )
     
     # Create final Excel file with formatting
-    create_excel_with_formatting(results_df, 'eval/multiple_choice/diabetes_mc_results_complete.xlsx')
-    logger.info("Saved complete results to eval/diabetes_mc_results_complete.xlsx")
+    final_output_path = f"{output_dir}/diabetes_mc_results_complete.xlsx"
+    create_excel_with_formatting(results_df, final_output_path)
+    logger.info(f"Saved complete results to {final_output_path}")
     
     # Calculate and log summary statistics
     total_questions = len(results_df)
@@ -337,7 +324,7 @@ async def main():
         'Date': pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
     }])
     
-    summary_file = 'eval/diabetes_mc_results_summary.xlsx'
+    summary_file = f"{output_dir}/diabetes_mc_results_summary.xlsx"
     summary_df.to_excel(summary_file, index=False)
     logger.info(f"Saved summary statistics to {summary_file}")
 
