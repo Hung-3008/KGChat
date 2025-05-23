@@ -422,28 +422,12 @@ Given the query and conversation history, list both high-level and low-level key
   - "high_level_keywords" for overarching concepts or themes
   - "low_level_keywords" for specific entities or details
 
-Example format:
-{{
-    "high_level_keywords": ["Diabetes management", "Blood sugar control"],
-    "low_level_keywords": ["Blood glucose", "Diet", "Exercise", "Insulin"]
-}}
-######################
----Examples---
-Query: Can you tell me about the relationship between diet and type 2 diabetes?
 
-######################
-{examples}
-
-#############################
----Real Data---
-######################
 Conversation History:
 {history}
 
 Current Query: {query}
-######################
-The `Output` should be human text, not unicode characters. Keep the same language as `Query`.
-Output:
+
 
 """
 

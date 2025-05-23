@@ -642,7 +642,6 @@ class Neo4jClient:
                     #     results.append(dict(record))
                     records = result.data()
             
-            logger.info(f"Successfully executed query: {query[:100]}... with {len(results)} results")
             return records
         except Exception as e:
             logger.error(f"Error executing query: {str(e)}")

@@ -573,6 +573,8 @@ async def evaluate_and_expand_entities(
             logger.error(f"Error in evaluation and expand entities: {str(e)}")
             break
 
+    additional_info = ""
+    
     if iteration > 0:
         # Final evaluation for logging purposes
         triplets = format_triplets_for_evaluation(
@@ -584,7 +586,6 @@ async def evaluate_and_expand_entities(
             query=query,
             triplets=triplets
         )
-        additional_info = ""
         try:
             evaluation_response = await gemini_client.generate(prompt=evaluation_prompt, format=EvaluationResult)
             evaluation_response = evaluation_response[0]
@@ -606,7 +607,7 @@ async def evaluate_and_expand_entities(
             logger.error(f"Error in final evaluation: {str(e)}")
 
     return level1_nodes, level2_nodes, additional_info
-    #return keywords_embeddings, additional_level1_nodes, relationships
+
 
 
 # async def evaluate_and_expand_entities(

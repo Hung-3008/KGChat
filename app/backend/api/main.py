@@ -11,7 +11,7 @@ import uvicorn
 
 from backend.core.retrieval.query_analyzer import analyze_query, QueryIntent
 from backend.core.retrieval.keyword_extractor import extract_keywords
-from backend.core.retrieval.kg_query_processor import process_kg_query
+from backend.core.retrieval.kg_query_processor import run_query
 
 # Import the ClientManager
 from backend.api.client_manager import ClientManager
@@ -34,6 +34,13 @@ app.add_middleware(
     allow_methods=["*"],  
     allow_headers=["*"],  
 )
+
+# client_manager = ClientManager.get_instance()
+# if not client_manager._initialized:
+#     asyncio.run(client_manager.initialize())
+# clients = client_manager.get_clients()
+    
+
 
 class QueryRequest(BaseModel):
     query: str = Field(..., description="The user's query text")
@@ -102,7 +109,9 @@ async def get_clients():
         if client is None:
             logger.warning(f"{name} is not initialized")
     
-    return clients
+    return clients, client_manager
+
+
 
 # API endpoints
 @app.get("/")
@@ -171,80 +180,42 @@ async def extract_query_keywords(
 @app.post("/api/query", response_model=QueryResponse)
 async def process_user_query(
     request: QueryRequest,
-    clients: Dict[str, Any] = Depends(get_clients)
+    #clients: Dict[str, Any] = Depends(get_clients)
 ):
-    """Process a complete query against the knowledge graph."""
-    try:
-        start_time = time.time()
-        
-        # Step 1: Analyze intent
-        intent_task = asyncio.create_task(
-            analyze_query(
+    clients, client_manager = await get_clients()
+
+    max_retries = 3
+    while max_retries > 0:
+        try:
+            result = await run_query(
                 query=request.query,
                 conversation_history=request.conversation_history,
-                client=clients["gemini_client"],
-                user_id=request.user_id
+                clients = clients, 
             )
-        )
-        
-        # Wait for intent analysis to complete
-        intent = await intent_task
-        
-        # Step 2: Extract keywords only for diabetes-related queries
-        high_level = []
-        low_level = []
-        
-        if intent == QueryIntent.DIABETES_RELATED:
-            # Only extract keywords if the query is diabetes-related
-            keywords_task = asyncio.create_task(
-                extract_keywords(
+            max_retries = 0
+            return result
+
+        except Exception as e:
+            # logger.error(f"Error processing query: {str(e)}", exc_info=True)
+            # raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
+            logger.warning(f"Retrying due to error: {str(e)}")
+            max_retries -= 1
+            time.sleep(10)
+            clients['gemini_client'] = client_manager.rotate_gemini_key()
+
+            try:
+                result = await run_query(
                     query=request.query,
                     conversation_history=request.conversation_history,
-                    llm_client=clients["gemini_client"]
+                    clients = clients, 
                 )
-            )
-            high_level, low_level = await keywords_task
+                max_retries = 0
+                return result
+            except Exception as e:
+                continue
+            
+
         
-        logger.info(f"Query: '{request.query}'")
-        logger.info(f"Intent: {intent.name}")
-        
-        if intent == QueryIntent.DIABETES_RELATED:
-            logger.info(f"High-level keywords: {high_level}")
-            logger.info(f"Low-level keywords: {low_level}")
-        
-        # Step 3: Process the query with the knowledge graph
-        # Note: We're using our pooled clients here by passing them in
-        result = await process_kg_query(
-            query=request.query,
-            intent=intent,
-            high_level_keywords=high_level,
-            low_level_keywords=low_level,
-            conversation_history=request.conversation_history,
-            neo4j_client=clients["neo4j_client"],
-            ollama_client=clients["ollama_client"],
-            gemini_client=clients["gemini_client"],
-            qdrant_client=clients["qdrant_client"],
-            user_id=request.user_id,
-            response_type=request.response_type
-        )
-        
-        processing_time = time.time() - start_time
-        
-        # Return the complete response
-        return {
-            "query": request.query,
-            "response": result.get("response", "Sorry, I couldn't generate a response."),
-            "intent": intent.value,
-            "keywords": {
-                "high_level": high_level,
-                "low_level": low_level
-            },
-            "processing_time_seconds": processing_time,
-            "sources": result.get("sources", [])
-        }
-    except Exception as e:
-        logger.error(f"Error processing query: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
 
 @app.get("/health")
 async def health_check():

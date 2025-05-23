@@ -154,6 +154,8 @@ def ask_question(question, response_type="concise"):
         }
         
         response = requests.post(API_URL, json=payload, timeout=60)
+
+        time.sleep(4)
         
         if response.status_code == 200:
             result = response.json()
@@ -266,7 +268,7 @@ async def process_dataset(dataset, gemini_client, key_manager, num_samples=None,
             create_excel_with_formatting(batch_df, batch_filename)
             logger.info(f"Saved batch {batch_number} with {len(batch_df)} questions to {batch_filename}")
         
-        time.sleep(1)
+        time.sleep(4)
     
     logger.info(f"Completed processing all {examples_to_process} questions")
     return pd.DataFrame(results)
@@ -278,7 +280,7 @@ async def main():
     load_dotenv()
     
     # Initialize key manager
-    key_manager = GeminiKeyManager(current_key_index=1, max_keys=6)
+    key_manager = GeminiKeyManager(current_key_index=4, max_keys=6)
     api_key = key_manager.get_current_key()
     
     if not api_key:
@@ -288,7 +290,7 @@ async def main():
     gemini_client = GeminiClient(api_key=api_key, model_name="gemini-2.0-flash")
     logger.info(f"Initialized Gemini client with API key index {key_manager.current_key_index}")
     
-    arrow_file_path = "eval/data/multiplechoices/train/data-00000-of-00001.arrow"
+    arrow_file_path = "/home/hung/Documents/hung/code/KG_Hung/KGChat/eval/multiple_choice/diabetes_instruct_v8-train.arrow"
     logger.info(f"Loading dataset from {arrow_file_path}")
     
     try:
@@ -302,7 +304,7 @@ async def main():
     # Create eval directory if it doesn't exist
     os.makedirs("eval", exist_ok=True)
     
-    num_samples = 3  # Change this to the desired number of samples
+    num_samples = 2 
     logger.info(f"Will process {num_samples} samples")
     
     results_df = await process_dataset(
@@ -315,7 +317,7 @@ async def main():
     )
     
     # Create final Excel file with formatting
-    create_excel_with_formatting(results_df, 'eval/diabetes_mc_results_complete.xlsx')
+    create_excel_with_formatting(results_df, 'eval/multiple_choice/diabetes_mc_results_complete.xlsx')
     logger.info("Saved complete results to eval/diabetes_mc_results_complete.xlsx")
     
     # Calculate and log summary statistics

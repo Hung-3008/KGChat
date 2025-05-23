@@ -34,6 +34,7 @@ class ClientManager:
         self.gemini_client = None
         self.qdrant_client = None
         self._initialized = False
+        self.current_key = 1
     
     async def initialize(self) -> bool:
         """Initialize all client connections"""
@@ -93,7 +94,7 @@ class ClientManager:
             logger.info("Successfully initialized Ollama client")
             
             # Initialize Gemini client
-            gemini_api_key = os.getenv("GEMINI_API_KEY_5")
+            gemini_api_key = os.getenv(f"GEMINI_API_KEY_{self.current_key}")
             
             self.gemini_client = GeminiClient(
                 api_key=gemini_api_key, 
@@ -142,3 +143,16 @@ class ClientManager:
             "gemini_client": self.gemini_client,
             "qdrant_client": self.qdrant_client
         }
+
+    def rotate_gemini_key(self):
+        if self.current_key == 6:
+            self.current_key = 1
+        else:
+            self.current_key += 1
+        gemini_api_key = os.getenv(f"GEMINI_API_KEY_{self.current_key}")
+        self.gemini_client = GeminiClient(
+            api_key=gemini_api_key, 
+            model_name="gemini-2.0-flash"
+        )
+
+        return self.gemini_client

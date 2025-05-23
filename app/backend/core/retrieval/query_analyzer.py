@@ -41,8 +41,6 @@ async def analyze_query(
     Returns:
         The classified query intent
     """
-    logger.info(f"Analyzing query intent: {query}")
-    
     if not query:
         logger.warning("Empty query received")
         return QueryIntent.GENERAL

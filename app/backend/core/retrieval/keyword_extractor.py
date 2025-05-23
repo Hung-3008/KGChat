@@ -43,19 +43,16 @@ async def extract_keywords(
             for msg in conversation_history[-3:]  # Only use last 3 messages for context
         ])
     
-    examples = "\n".join(PROMPTS.get("keywords_extraction_examples", []))
     
     extraction_prompt = PROMPTS.get("keywords_extraction", "").format(
         query=query,
         history=history_text,
-        examples=examples
     )
     
     try:
         
         response = await llm_client.generate(
             prompt=extraction_prompt,
-            #system_prompt="You are a precise keyword extraction assistant.",
             format=KeywordExtraction
         )
         
@@ -66,7 +63,7 @@ async def extract_keywords(
         else:
             logger.error("Unexpected response format from LLM")
             return [], []
-        
+        logger.info(f"Extracted keywords: {high_level_keywords}, {low_level_keywords}") 
         return high_level_keywords, low_level_keywords
                     
     except Exception as e:
