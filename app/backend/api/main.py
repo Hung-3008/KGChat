@@ -191,13 +191,12 @@ async def process_user_query(
                 query=request.query,
                 conversation_history=request.conversation_history,
                 clients = clients, 
+                grounding=True
             )
             max_retries = 0
             return result
 
         except Exception as e:
-            # logger.error(f"Error processing query: {str(e)}", exc_info=True)
-            # raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
             logger.warning(f"Retrying due to error: {str(e)}")
             max_retries -= 1
             time.sleep(10)

@@ -4,6 +4,17 @@ import asyncio
 import time
 from typing import List, Dict, Any, Optional, Tuple, Union
 from pydantic import BaseModel, Field
+from dotenv import load_dotenv
+import sys
+
+# Add backend path to system path
+sys.path.append("./app")
+from backend.llm.gemini_client import GeminiClient
+from backend.db.neo4j_client import Neo4jClient
+from backend.db.vector_db import VectorDBClient
+from backend.llm.ollama_client import OllamaClient
+from qdrant_client import QdrantClient
+from backend.core.retrieval.kg_query_processor import run_query
 
 
 class EvaluatorResponse(BaseModel):
@@ -13,6 +24,196 @@ class EvaluatorResponse(BaseModel):
 
 class CommentorResponse(BaseModel):
     feedback: str = Field()
+
+
+class GeminiKeyManager:
+    def __init__(
+        self,
+        current_key_index: int = 1,
+        max_keys: int = 6,
+        key_pattern: str = "GEMINI_API_KEY_{}"
+    ):
+        self.current_key_index = current_key_index
+        self.max_keys = max_keys
+        self.key_pattern = key_pattern
+    
+    def get_current_key(self) -> str:
+        key_name = self.key_pattern.format(self.current_key_index)
+        api_key = os.getenv(key_name)
+        
+        if not api_key:
+            print(f"API key {key_name} not found in environment variables")
+            return None
+            
+        return api_key
+    
+    def rotate_key(self) -> str:
+        for _ in range(self.max_keys):
+            self.current_key_index = (self.current_key_index % self.max_keys) + 1
+            
+            key_name = self.key_pattern.format(self.current_key_index)
+            api_key = os.getenv(key_name)
+            
+            if api_key:
+                print(f"Rotated to API key {key_name}")
+                return api_key
+        
+        print("No valid API keys found after trying all options")
+        return None
+
+
+class BackendClientManager:
+    """Manager for all backend clients"""
+    
+    def __init__(self, gemini_key_manager):
+        self.gemini_key_manager = gemini_key_manager
+        self.clients = None
+        self.initialized = False
+    
+    async def initialize(self):
+        """Initialize all backend clients"""
+        if self.initialized:
+            return self.clients
+            
+        load_dotenv()
+        
+        # Initialize Neo4j client
+        neo4j_uri = os.getenv('NEO4J_URI')
+        neo4j_username = os.getenv('NEO4J_USERNAME')
+        neo4j_password = os.getenv('NEO4J_PASSWORD')
+        
+        neo4j_client = Neo4jClient(
+            uri=neo4j_uri,
+            username=neo4j_username,
+            password=neo4j_password
+        )
+        
+        # Initialize Vector DB client
+        qdrant_host = os.getenv("QDRANT_HOST", "localhost")
+        qdrant_port = int(os.getenv("QDRANT_PORT", "6333"))
+        
+        vector_db_client = VectorDBClient(
+            host=qdrant_host,
+            port=qdrant_port
+        )
+        
+        # Initialize Qdrant client
+        qdrant_client = QdrantClient(
+            host=qdrant_host, 
+            port=qdrant_port
+        )
+        
+        # Initialize Ollama client
+        ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+        embedding_model = os.getenv("OLLAMA_EMBEDDING_MODEL", "mxbai-embed-large")
+        
+        ollama_client = OllamaClient(
+            host=ollama_host,
+            embedding_model=embedding_model
+        )
+        
+        # Initialize Gemini client with key manager
+        gemini_api_key = self.gemini_key_manager.get_current_key()
+        gemini_client = GeminiClient(
+            api_key=gemini_api_key, 
+            model_name="gemini-2.0-flash"
+        )
+        
+        # Verify connectivity
+        if not await neo4j_client.verify_connectivity():
+            print("Failed to connect to Neo4j database")
+            raise Exception("Neo4j connection failed")
+            
+        print("All backend clients initialized successfully")
+        
+        self.clients = {
+            "neo4j_client": neo4j_client,
+            "vector_db_client": vector_db_client,
+            "ollama_client": ollama_client,
+            "gemini_client": gemini_client,
+            "qdrant_client": qdrant_client
+        }
+        
+        self.initialized = True
+        return self.clients
+    
+    def rotate_gemini_key(self):
+        """Rotate Gemini API key when needed"""
+        new_key = self.gemini_key_manager.rotate_key()
+        if new_key:
+            new_gemini_client = GeminiClient(
+                api_key=new_key, 
+                model_name="gemini-2.0-flash"
+            )
+            self.clients["gemini_client"] = new_gemini_client
+            return new_gemini_client
+        return None
+    
+    async def close(self):
+        """Close all client connections"""
+        if self.clients and "neo4j_client" in self.clients:
+            await self.clients["neo4j_client"].close()
+        self.initialized = False
+
+
+class BackendAPIClient:
+    """Adapter to mimic API client behavior but using backend services directly"""
+    
+    def __init__(self, client_manager: BackendClientManager, max_retries: int = 3):
+        self.client_manager = client_manager
+        self.max_retries = max_retries
+    
+    async def get_answer(self, prompt: str, conversation_history: List[Dict[str, str]] = None,
+                        response_type: str = "concise", user_id: str = "test_user") -> str:
+        """
+        Get answer using backend services directly instead of HTTP API
+        """
+        if conversation_history is None:
+            conversation_history = []
+        
+        clients = await self.client_manager.initialize()
+        
+        for attempt in range(self.max_retries):
+            try:
+                # Use the backend kg_query_processor directly
+                result = await run_query(
+                    query=prompt,
+                    conversation_history=conversation_history,
+                    clients=clients,
+                    grounding=False,  # Set to True if you want web grounding
+                    language="English"
+                )
+                
+                if result and "response" in result:
+                    return result["response"]
+                else:
+                    print(f"No response received on attempt {attempt + 1}")
+                    
+            except Exception as e:
+                error_str = str(e).lower()
+                print(f"Error on attempt {attempt + 1}/{self.max_retries}: {error_str}")
+                
+                # Check if it's a rate limit or quota error
+                if any(keyword in error_str for keyword in ["resource_exhausted", "rate limit", "429", "quota"]):
+                    # Try to rotate the Gemini API key
+                    new_client = self.client_manager.rotate_gemini_key()
+                    if new_client:
+                        clients["gemini_client"] = new_client
+                        print(f"Rotated to new Gemini API key (index: {self.client_manager.gemini_key_manager.current_key_index})")
+                        await asyncio.sleep(2)  # Wait before retry
+                    else:
+                        print("No more valid Gemini API keys available")
+                        if attempt == self.max_retries - 1:
+                            break
+                else:
+                    # For other errors, wait a bit and retry
+                    await asyncio.sleep(1)
+                    
+            if attempt < self.max_retries - 1:
+                await asyncio.sleep(2)  # Wait between retries
+        
+        print(f"Failed to get response after {self.max_retries} attempts")
+        return "Error: Failed to get response from backend services"
 
 
 class HitRateCalculator:
@@ -118,7 +319,8 @@ class HitRateCalculator:
             
             conversation_history.append(current_message)
             
-            response = self.api_client.get_answer(
+            # Use the backend API client instead of HTTP API
+            response = await self.api_client.get_answer(
                 prompt=current_message["content"],
                 conversation_history=conversation_history,
                 response_type=response_type,
@@ -288,6 +490,7 @@ Provide your feedback as a short paragraph (2-3 sentences).
         return f"{question}\n\nYour previous answer: \"{response}\"\n\nFeedback: {feedback}\n\nPlease provide an improved answer based on this feedback."
     
     def save_results(self, filepath: str) -> None:
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
         with open(filepath, 'w') as f:
             json.dump(self.results, f, indent=2)
     
@@ -337,74 +540,137 @@ def create_dataset(questions, ground_truths):
 
 
 async def main():
-    import os
-    import sys
-    sys.path.append(".")
-
-    from utils import DiabetesKGAPIClient
-    from app.backend.llm.gemini_client import GeminiClient
-    from dotenv import load_dotenv
-    
     load_dotenv()
-    gemini_api_key = os.getenv("GEMINI_API_KEY")
     
-    api_client = DiabetesKGAPIClient(
-        api_url="http://localhost:8000",
-        timeout=120
-    )
+    # Initialize key manager and client manager
+    key_manager = GeminiKeyManager(current_key_index=1, max_keys=6)
+    client_manager = BackendClientManager(key_manager)
     
-    gemini_client = GeminiClient(
-        api_key=gemini_api_key,
-        model_name="gemini-2.0-flash"
-    )
-    
-    calculator = HitRateCalculator(
-        api_client=api_client,
-        gemini_client=gemini_client,
-        max_attempts=3
-    )
-    
-    questions = [
-        "What is diabetes? a. Body produces too much glucose b. Body does not make or use insulin properly c. Joints are stiff and painful d. a and b",
-        "What are the main symptoms of type 2 diabetes?"
-    ]
-    
-    ground_truths = [
-        {
-            "answer": "d"
-        },
-        {
-            "required_elements": [
-                "increased thirst", 
-                "frequent urination", 
-                "fatigue", 
-                "blurred vision", 
-                "slow healing"
-            ],
-            "required_count": 3
-        }
-    ]
-    
-    dataset = create_dataset(questions, ground_truths)
-    
-    for use_feedback in [False, True]:
-        feedback_status = "with" if use_feedback else "without"
-        print(f"\nEvaluating {feedback_status} feedback...")
+    try:
+        # Initialize backend API client
+        api_client = BackendAPIClient(client_manager, max_retries=3)
         
-        results = await calculator.evaluate_dataset(
-            dataset=dataset,
-            use_feedback=use_feedback,
-            response_type="concise",
-            user_id="test_user"
+        # Initialize separate Gemini client for evaluation
+        gemini_api_key = key_manager.get_current_key()
+        if not gemini_api_key:
+            print("No valid Gemini API key found")
+            return
+            
+        gemini_client = GeminiClient(
+            api_key=gemini_api_key,
+            model_name="gemini-2.0-flash"
         )
         
-        print(f"Results summary:")
-        for i in range(1, calculator.max_attempts + 1):
-            print(f"  Hit@{i}: {results['hit_rates'].get(f'hit_rate@{i}', 0):.2f}")
-    
-    calculator.save_results("hit_rate_results.json")
-    
-    print("\nEvaluation complete. Results saved to hit_rate_results.json")
+        calculator = HitRateCalculator(
+            api_client=api_client,
+            gemini_client=gemini_client,
+            max_attempts=3
+        )
+        
+        # Define test questions and ground truths
+        questions = [
+            "What is diabetes? a. Body produces too much glucose b. Body does not make or use insulin properly c. Joints are stiff and painful d. a and b",
+            "What are the main symptoms of type 2 diabetes?",
+            "What are the complications of uncontrolled diabetes?",
+            "How is diabetes diagnosed?",
+            "What lifestyle changes can help manage diabetes?"
+        ]
+        
+        ground_truths = [
+            {
+                "answer": "d"
+            },
+            {
+                "required_elements": [
+                    "increased thirst", 
+                    "frequent urination", 
+                    "fatigue", 
+                    "blurred vision", 
+                    "slow healing"
+                ],
+                "required_count": 3
+            },
+            {
+                "required_elements": [
+                    "heart disease",
+                    "kidney damage", 
+                    "nerve damage",
+                    "eye problems",
+                    "foot problems"
+                ],
+                "required_count": 3
+            },
+            {
+                "required_elements": [
+                    "fasting glucose",
+                    "A1C test",
+                    "glucose tolerance test",
+                    "random glucose"
+                ],
+                "required_count": 2
+            },
+            {
+                "required_elements": [
+                    "healthy diet",
+                    "regular exercise",
+                    "weight management",
+                    "blood sugar monitoring"
+                ],
+                "required_count": 3
+            }
+        ]
+        
+        dataset = create_dataset(questions, ground_truths)
+        
+        # Create output directory
+        output_dir = f"eval/hit_rate_results/{int(time.time())}"
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Evaluate with and without feedback
+        for use_feedback in [False, True]:
+            feedback_status = "with" if use_feedback else "without"
+            print(f"\nEvaluating {feedback_status} feedback...")
+            
+            results = await calculator.evaluate_dataset(
+                dataset=dataset,
+                use_feedback=use_feedback,
+                response_type="concise",
+                user_id="test_user"
+            )
+            
+            print(f"Results summary:")
+            for i in range(1, calculator.max_attempts + 1):
+                hit_rate = results['hit_rates'].get(f'hit_rate@{i}', 0)
+                print(f"  Hit@{i}: {hit_rate:.2f}")
+        
+        # Save results
+        results_file = f"{output_dir}/hit_rate_results.json"
+        calculator.save_results(results_file)
+        
+        # Get and save summary statistics
+        summary_stats = await calculator.get_summary_stats()
+        summary_file = f"{output_dir}/hit_rate_summary.json"
+        with open(summary_file, 'w') as f:
+            json.dump(summary_stats, f, indent=2)
+        
+        print(f"\nEvaluation complete. Results saved to:")
+        print(f"  - Detailed results: {results_file}")
+        print(f"  - Summary statistics: {summary_file}")
+        
+        # Print comparison
+        print("\nFeedback Comparison:")
+        feedback_comp = summary_stats.get("feedback_comparison", {})
+        for category, data in feedback_comp.items():
+            print(f"\n{category.replace('_', ' ').title()}:")
+            for hit_key, value in data.get("hit_rates", {}).items():
+                print(f"  {hit_key}: {value:.2f}")
+                
+    except Exception as e:
+        print(f"Error in main process: {str(e)}")
+    finally:
+        # Clean up connections
+        await client_manager.close()
+        print("Closed all backend connections")
 
 
 if __name__ == "__main__":
