@@ -24,96 +24,6 @@ from backend.llm.ollama_client import OllamaClient
 from qdrant_client import QdrantClient
 from backend.core.retrieval.kg_query_processor import run_query
 
-def classify_multiple_choice_question(text: str) -> Dict[str, Any]:
-    
-    text = text.strip()
-    
-    result = {
-        'is_multiple_choice': False,
-        'question_type': 'OTHER',
-        'options_found': [],
-        'confidence': 0.0
-    }
-    
-    abcd_pattern = r'\n?\s*[A-Z][.)]\s*[^\n]+'
-    abcd_matches = re.findall(abcd_pattern, text, re.MULTILINE)
-    
-    valid_abcd = []
-    if abcd_matches:
-        letters = [re.match(r'\n?\s*([A-Z])[.)]', match).group(1) for match in abcd_matches]
-        
-        expected_sequence = [chr(ord('A') + i) for i in range(len(letters))]
-        if letters == expected_sequence and len(letters) >= 2:
-            valid_abcd = abcd_matches
-    
-    number_pattern = r'\n?\s*[1-9][.)]\s*[^\n]+'
-    number_matches = re.findall(number_pattern, text, re.MULTILINE)
-    
-    valid_number = []
-    if number_matches:
-        numbers = [int(re.match(r'\n?\s*([1-9])[.)]', match).group(1)) for match in number_matches]
-        expected_numbers = list(range(1, len(numbers) + 1))
-        if numbers == expected_numbers and len(numbers) >= 2:
-            valid_number = number_matches
-    
-    yes_no_pattern = r'\b(Yes\s*/\s*No|Y\s*/\s*N)\b'
-    yes_no_explicit = re.search(yes_no_pattern, text, re.IGNORECASE)
-    
-    is_question = text.strip().endswith('?')
-    is_short = len(text.split()) < 50  
-    
-    true_false_pattern = r'\b(True\s*/\s*False|T\s*/\s*F)\b'
-    true_false_explicit = re.search(true_false_pattern, text, re.IGNORECASE)
-    
-    if valid_abcd:
-        result['is_multiple_choice'] = True
-        result['question_type'] = 'ABCD'
-        result['options_found'] = [match.strip() for match in valid_abcd]
-        result['confidence'] = 0.95
-        
-    elif valid_number:
-        result['is_multiple_choice'] = True
-        result['question_type'] = 'NUMBERED'
-        result['options_found'] = [match.strip() for match in valid_number]
-        result['confidence'] = 0.90
-        
-    elif yes_no_explicit:
-        result['is_multiple_choice'] = True
-        result['question_type'] = 'YES_NO'
-        result['options_found'] = ['Yes', 'No']
-        result['confidence'] = 0.90
-        
-    elif true_false_explicit:
-        result['is_multiple_choice'] = True
-        result['question_type'] = 'TRUE_FALSE'
-        result['options_found'] = ['True', 'False']
-        result['confidence'] = 0.90
-        
-    elif is_question and is_short:
-        yes_no_keywords = [
-            r'\bis\s+\w+\s+(correct|true|false|right|wrong)',
-            r'\bcan\s+\w+',
-            r'\bwill\s+\w+',
-            r'\bshould\s+\w+',
-            r'\bdoes\s+\w+',
-            r'\bdo\s+you'
-        ]
-        
-        for pattern in yes_no_keywords:
-            if re.search(pattern, text, re.IGNORECASE):
-                result['is_multiple_choice'] = True
-                result['question_type'] = 'YES_NO_IMPLIED'
-                result['options_found'] = ['Yes', 'No']
-                result['confidence'] = 0.60
-                break
-    
-    return result
-
-
-def is_multiple_choice_question(text: str) -> bool:
-    result = classify_multiple_choice_question(text)
-    return result['is_multiple_choice']
-
 
 logging.basicConfig(
     level=logging.INFO,
@@ -128,6 +38,37 @@ logger = logging.getLogger(__name__)
 class EvaluationResult(BaseModel):
     is_correct: int = Field()
 
+class TranslationResult(BaseModel):
+    translated_text: str = Field()
+
+class GeminiRateLimiter:
+    """Rate limiter for Gemini API calls (10 requests per minute)"""
+    def __init__(self, max_requests_per_minute=10):
+        self.max_requests = max_requests_per_minute
+        self.requests = []
+        self.lock = asyncio.Lock()
+    
+    async def wait_if_needed(self):
+        """Wait if we're approaching rate limit"""
+        async with self.lock:
+            now = time.time()
+            # Remove requests older than 1 minute
+            self.requests = [req_time for req_time in self.requests if now - req_time < 60]
+            
+            if len(self.requests) >= self.max_requests:
+                # Calculate how long to wait
+                oldest_request = min(self.requests)
+                wait_time = 61 - (now - oldest_request)  # Wait until oldest request is > 60 seconds old
+                if wait_time > 0:
+                    logger.info(f"Rate limit approaching, waiting {wait_time:.1f} seconds...")
+                    await asyncio.sleep(wait_time)
+                    # Clean up again after waiting
+                    now = time.time()
+                    self.requests = [req_time for req_time in self.requests if now - req_time < 60]
+            
+            # Record this request
+            self.requests.append(now)
+
 class GeminiKeyManager:
     def __init__(
         self,
@@ -139,6 +80,7 @@ class GeminiKeyManager:
         self.max_keys = max_keys
         self.key_pattern = key_pattern
         self.logger = logging.getLogger(__name__)
+        self.rate_limiter = GeminiRateLimiter()
     
     def get_current_key(self) -> str:
         key_name = self.key_pattern.format(self.current_key_index)
@@ -159,6 +101,8 @@ class GeminiKeyManager:
             
             if api_key:
                 self.logger.info(f"Rotated to API key {key_name}")
+                # Reset rate limiter for new key
+                self.rate_limiter = GeminiRateLimiter()
                 return api_key
         
         self.logger.error("No valid API keys found after trying all options")
@@ -260,6 +204,57 @@ class ClientManager:
             await self.neo4j_client.close()
         self.initialized = False
 
+async def translate_chinese_to_english(gemini_client, key_manager, text, max_retries=3):
+    translation_prompt = f"""
+    Please translate the following Chinese text to English. 
+    The text may contain medical or diabetes-related terminology.
+    Provide only the English translation without any additional explanation.
+    
+    Chinese text:
+    {text}
+    """
+    
+    for attempt in range(max_retries):
+        try:
+            # Wait for rate limiting
+            await key_manager.rate_limiter.wait_if_needed()
+            
+            logger.debug(f"Translating text (attempt {attempt + 1}/{max_retries})")
+            
+            response = await gemini_client.generate(
+                prompt=translation_prompt,
+                format=TranslationResult
+            )
+            
+            if isinstance(response, list) and len(response) > 0:
+                translated_text = response[0].translated_text
+                logger.debug(f"Translation successful: {text[:50]}... -> {translated_text[:50]}...")
+                return translated_text
+            else:
+                logger.warning(f"No translation received on attempt {attempt + 1}")
+                
+        except Exception as e:
+            error_str = str(e).lower()
+            logger.error(f"Translation error on attempt {attempt + 1}/{max_retries}: {error_str}")
+            
+            # Check if it's a rate limit or quota error
+            if any(keyword in error_str for keyword in ["resource_exhausted", "rate limit", "429", "quota"]):
+                new_key = key_manager.rotate_key()
+                if new_key:
+                    gemini_client.api_key = new_key
+                    os.environ["GEMINI_API_KEY"] = new_key
+                    logger.info(f"Switched to API key index {key_manager.current_key_index} for translation")
+                else:
+                    logger.error("No more API keys available for translation")
+                    if attempt == max_retries - 1:
+                        break
+            
+            if attempt < max_retries - 1:
+                await asyncio.sleep(3)  # Wait longer for translation retries
+    
+    logger.error(f"Failed to translate text after {max_retries} attempts: {text[:100]}...")
+    return text  # Return original text if translation fails
+
 async def ask_question_direct(question, clients, key_manager, response_type="concise", max_retries=3):
     """
     Directly use backend services instead of API calls
@@ -309,22 +304,25 @@ async def ask_question_direct(question, clients, key_manager, response_type="con
                 if new_client:
                     clients["gemini_client"] = new_client
                     logger.info(f"Rotated to new Gemini API key (index: {key_manager.current_key_index})")
-                    await asyncio.sleep(2)  # Wait before retry
+                    await asyncio.sleep(3)  # Wait before retry
                 else:
                     logger.error("No more valid Gemini API keys available")
                     if attempt == max_retries - 1:
                         break
             else:
                 # For other errors, wait a bit and retry
-                await asyncio.sleep(1)
+                await asyncio.sleep(2)
                 
         if attempt < max_retries - 1:
-            await asyncio.sleep(2)  # Wait between retries
+            await asyncio.sleep(3)  # Wait between retries
     
     logger.error(f"Failed to get response after {max_retries} attempts")
     return "Error: Failed to get response from backend services"
 
 async def evaluate_answer(gemini_client, key_manager, question, correct_answer, model_answer):
+    """
+    Evaluate if model's answer matches the correct answer
+    """
     prompt = f"""
     You are an evaluation system for multiple-choice answers. 
     
@@ -351,6 +349,9 @@ async def evaluate_answer(gemini_client, key_manager, question, correct_answer, 
     
     for attempt in range(max_retries):
         try:
+            # Wait for rate limiting
+            await key_manager.rate_limiter.wait_if_needed()
+            
             response = await gemini_client.generate(
                 prompt=prompt,
                 format=EvaluationResult
@@ -359,8 +360,7 @@ async def evaluate_answer(gemini_client, key_manager, question, correct_answer, 
             if isinstance(response, list) and len(response) > 0:
                 result = response[0].is_correct
             else:
-                result = 0
-                
+                result = 0                
             return result
             
         except Exception as e:
@@ -376,7 +376,7 @@ async def evaluate_answer(gemini_client, key_manager, question, correct_answer, 
                     logger.error("No more API keys available to try")
                     break
                 
-                await asyncio.sleep(2)
+                await asyncio.sleep(3)  # Longer wait for evaluation retries
     
     logger.warning("All evaluation attempts failed")
     return 0
@@ -395,18 +395,23 @@ def create_excel_with_formatting(df, output_path):
     correct_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
     incorrect_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
     
-    worksheet.column_dimensions['A'].width = 15
-    worksheet.column_dimensions['B'].width = 25
-    worksheet.column_dimensions['C'].width = 25
-    worksheet.column_dimensions['D'].width = 15
+    # Adjust column widths
+    worksheet.column_dimensions['A'].width = 15  # question
+    worksheet.column_dimensions['B'].width = 50  # original_question (Chinese)
+    worksheet.column_dimensions['C'].width = 50  # translated_question (English)
+    worksheet.column_dimensions['D'].width = 25  # correct_answer
+    worksheet.column_dimensions['E'].width = 25  # model_answer
+    worksheet.column_dimensions['F'].width = 15  # is_correct
     
     for col_num, column_title in enumerate(df.columns, 1):
         cell = worksheet.cell(row=1, column=col_num)
         cell.fill = header_fill
         cell.font = header_font
         
+    # Color code the is_correct column
+    is_correct_col = df.columns.get_loc('is_correct') + 1
     for row_num, value in enumerate(df['is_correct'], 2):
-        cell = worksheet.cell(row=row_num, column=4)
+        cell = worksheet.cell(row=row_num, column=is_correct_col)
         if value == 1:
             cell.fill = correct_fill
             cell.value = "1"
@@ -421,7 +426,7 @@ def create_excel_with_formatting(df, output_path):
 async def process_dataset(dataset, clients, gemini_client, key_manager, num_samples=None, batch_size=100, save_prefix='diabetes_mc_results'):
     results = []
     
-    total_examples = len(dataset['input'])
+    total_examples = len(dataset['query'])  # Changed from 'input' to 'query'
     examples_to_process = min(total_examples, num_samples) if num_samples else total_examples
     
     logger.info(f"Starting processing of {examples_to_process} questions")
@@ -435,39 +440,46 @@ async def process_dataset(dataset, clients, gemini_client, key_manager, num_samp
     os.makedirs(batch_dir, exist_ok=True)
     
     for i in range(examples_to_process):
-        question = dataset['input'][i]
-        is_multiple_choice = is_multiple_choice_question(question)
-        if not is_multiple_choice:
-            logger.info(f"Skipping question {i+1}/{examples_to_process} as it is not a multiple-choice question")
-            continue
-
-        correct_answer = dataset['output'][i]
+        original_question = dataset['query'][i]  # Changed from 'input' to 'query'
+        correct_answer = dataset['response'][i]  # Changed from 'output' to 'response'
+        
         logger.info(f"Processing question {i+1}/{examples_to_process}")
         
-        # Use direct backend integration instead of API call
+        # Translate Chinese question to English
+        logger.debug("Translating question from Chinese to English...")
+        translated_question = await translate_chinese_to_english(
+            gemini_client, 
+            key_manager, 
+            original_question
+        )
+        
+        # Use translated question for processing
         model_answer = await ask_question_direct(
-            question=question, 
+            question=translated_question, 
             clients=clients, 
             key_manager=key_manager,
             response_type="concise"
         )
         logger.debug(f"Model answered: {model_answer}")
         
+        # Evaluate the answer
         is_correct = await evaluate_answer(
             gemini_client, 
             key_manager, 
-            question, 
+            translated_question, 
             correct_answer, 
             model_answer
         )
         
         results.append({
-            'question': question,
+            'original_question': original_question,      # Chinese question
+            'translated_question': translated_question,  # English translation
             'correct_answer': correct_answer,
             'model_answer': model_answer,
             'is_correct': is_correct
         })
         
+        # Save batch periodically
         if (i + 1) % batch_size == 0 or i == examples_to_process - 1:
             batch_number = (i + 1) // batch_size if (i + 1) % batch_size == 0 else ((i + 1) // batch_size) + 1
             batch_df = pd.DataFrame(results)
@@ -476,26 +488,23 @@ async def process_dataset(dataset, clients, gemini_client, key_manager, num_samp
             create_excel_with_formatting(batch_df, batch_filename)
             logger.info(f"Saved batch {batch_number} with {len(batch_df)} questions to {batch_filename}")
         
-        # Add delay between questions to avoid overwhelming the system
-        await asyncio.sleep(2)
+        logger.debug("Waiting to respect rate limits...")
+        await asyncio.sleep(20)
     
     logger.info(f"Completed processing all {examples_to_process} questions")
     return pd.DataFrame(results)
 
 async def main():
-    logger.info("Starting evaluation process with direct backend integration")
+    logger.info("Starting evaluation process with direct backend integration and translation")
     
     load_dotenv()
     
-    # Initialize key manager and client manager
     key_manager = GeminiKeyManager(current_key_index=4, max_keys=6)
     client_manager = ClientManager()
     
     try:
-        # Initialize all backend clients
         clients = await client_manager.initialize(key_manager)
         
-        # Get separate gemini client for evaluation
         api_key = key_manager.get_current_key()
         if not api_key:
             logger.error("No valid Gemini API key found in environment variables")
@@ -504,19 +513,26 @@ async def main():
         gemini_client = GeminiClient(api_key=api_key, model_name="gemini-2.0-flash")
         logger.info(f"Initialized evaluation Gemini client with API key index {key_manager.current_key_index}")
         
-        # Load dataset
         arrow_file_path = "/home/hung/Documents/hung/code/KG_Hung/KGChat/eval/multiple_choice/diabetes_instruct_v8-train.arrow"
         logger.info(f"Loading dataset from {arrow_file_path}")
         
         try:
             dataset = Dataset.from_file(arrow_file_path)
             dataset_dict = dataset.to_dict()
-            logger.info(f"Dataset loaded successfully with {len(dataset_dict['input'])} questions")
+            
+            expected_keys = ['query', 'response']
+            actual_keys = list(dataset_dict.keys())
+            logger.info(f"Dataset keys found: {actual_keys}")
+            
+            if not all(key in actual_keys for key in expected_keys):
+                logger.error(f"Expected keys {expected_keys} but found {actual_keys}")
+                return
+            
+            logger.info(f"Dataset loaded successfully with {len(dataset_dict['query'])} questions")
         except Exception as e:
             logger.error(f"Failed to load dataset: {str(e)}")
             return
         
-        # Set up output directories
         now = datetime.now()
         date_str = now.strftime("%Y_%m_%d")
         time_str = now.strftime("%H_%M_%S")
@@ -524,8 +540,7 @@ async def main():
         output_dir = f"eval/multiple_choice/{date_str}/{time_str}"
         os.makedirs(output_dir, exist_ok=True)
         
-        # Process samples
-        num_samples = None
+        num_samples = 10 
         if num_samples:
             logger.info(f"Will process {num_samples} samples")
         else:
@@ -537,7 +552,7 @@ async def main():
             gemini_client=gemini_client,
             key_manager=key_manager,
             num_samples=num_samples,
-            batch_size=25,  # Smaller batch size for more frequent saves
+            batch_size=10,  
             save_prefix='diabetes_mc_results'
         )
         
@@ -560,7 +575,8 @@ async def main():
             'Total Questions': total_questions,
             'Correct Answers': correct_count,
             'Accuracy': f"{accuracy:.2f}%",
-            'Date': pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+            'Date': pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'Translation Enabled': True
         }])
         
         summary_file = f"{output_dir}/diabetes_mc_results_summary.xlsx"

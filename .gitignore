@@ -136,3 +136,4 @@ path/*
 app/digest.txt
 *.log
 eval/multiple_choice/*
+eval/*
