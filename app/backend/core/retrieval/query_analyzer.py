@@ -7,8 +7,8 @@ from datetime import datetime
 from enum import Enum
 import uuid
 
-from backend.utils.logging import get_logger
-from backend.llm.gemini_client import GeminiClient
+from utils.logging import get_logger
+from llm.gemini_client import GeminiClient
 
 
 logger = get_logger(__name__)

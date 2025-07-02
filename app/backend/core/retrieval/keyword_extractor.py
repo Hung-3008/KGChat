@@ -11,8 +11,8 @@ from typing import List, Dict, Any, Tuple, Optional, Union
 import asyncio
 from pydantic import BaseModel, Field
 
-from backend.core.pipeline.gemini.prompts import PROMPTS
-from backend.utils.logging import get_logger
+from core.pipeline.gemini.prompts import PROMPTS
+from utils.logging import get_logger
 
 # Configure logging
 logger = get_logger(__name__)

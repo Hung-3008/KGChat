@@ -1,0 +1,150 @@
+version: '3.8'
+
+services:
+  # FastAPI Backend Service
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: kgchat-backend
+    ports:
+      - "8000:8000"
+    environment:
+      # Fix Neo4j URI - dùng container name
+      - NEO4J_URI=bolt://kgchat-neo4j:7687
+      - NEO4J_USERNAME=neo4j
+      - NEO4J_PASSWORD=12345678
+      
+      # Fix other services - dùng container names
+      - QDRANT_HOST=kgchat-qdrant
+      - QDRANT_PORT=6333
+      - OLLAMA_HOST=http://kgchat-ollama:11434
+      - OLLAMA_EMBEDDING_MODEL=mxbai-embed-large
+      
+      # Gemini keys (thêm keys thật của bạn)
+      - GEMINI_API_KEY_1=AIzaSyCyWgzcL6l-JpWwmTBGtySVDoB-7PPpZlw
+      - GEMINI_API_KEY_2=AIzaSyA7GKDu3t3SDSwqpP_9L9nd8IjJBkMgsWI
+      - GEMINI_API_KEY_3=AIzaSyDxOtiQ5xw9Sj8xLEC3TstTsAqxLJTtbuA
+      - GEMINI_API_KEY_4=AIzaSyC10YkCW1orcX_A1b_y581cuRe6uXo8faQ
+      - GEMINI_API_KEY_5=AIzaSyA-y6smsadJp2sd-SQlv-w9C2nSbaMxK0U
+      - GEMINI_API_KEY_6=AIzaSyA-y6smsadJp2sd-SQlv-w9C2nSbaMxK0U
+    volumes:
+      - ./user_data:/app/user_data:rw
+      - ./data:/app/data:rw
+    depends_on:
+      - neo4j
+      - qdrant
+      - ollama
+    networks:
+      - kgchat-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Streamlit Frontend Service
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
+    container_name: kgchat-frontend
+    ports:
+      - "8501:8501"
+    environment:
+      - API_URL=http://backend:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - kgchat-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Neo4j Database
+  neo4j:
+    image: neo4j:5.25-community
+    container_name: kgchat-neo4j
+    ports:
+      - "7475:7474"
+      - "7688:7687"
+    environment:
+      - NEO4J_AUTH=neo4j/12345678
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_apoc_export_file_enabled=true
+      - NEO4J_apoc_import_file_enabled=true
+      - NEO4J_apoc_import_file_use__neo4j__config=true
+      - NEO4J_ACCEPT_LICENSE_AGREEMENT=yes
+      - NEO4J_dbms_memory_heap_initial__size=512M
+      - NEO4J_dbms_memory_heap_max__size=2G
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+      - neo4j_import:/var/lib/neo4j/import
+      - neo4j_plugins:/plugins
+    networks:
+      - kgchat-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p 12345678 'RETURN 1'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # Qdrant Vector Database
+  qdrant:
+    image: qdrant/qdrant:v1.7.3
+    container_name: kgchat-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    networks:
+      - kgchat-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # Ollama for Local LLM
+  ollama:
+    image: ollama/ollama:latest
+    container_name: kgchat-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - kgchat-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  neo4j_data:
+  neo4j_logs:
+  neo4j_import:
+  neo4j_plugins:
+  qdrant_storage:
+  ollama_data:
+
+networks:
+  kgchat-network:
+    driver: bridge
+

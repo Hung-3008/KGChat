@@ -3,10 +3,10 @@ from typing import Optional, Dict, Any
 import logging
 from dotenv import load_dotenv
 
-from backend.db.neo4j_client import Neo4jClient
-from backend.db.vector_db import VectorDBClient
-from backend.llm.ollama_client import OllamaClient
-from backend.llm.gemini_client import GeminiClient
+from db.neo4j_client import Neo4jClient
+from db.vector_db import VectorDBClient
+from llm.ollama_client import OllamaClient
+from llm.gemini_client import GeminiClient
 from qdrant_client import QdrantClient
 
 # Configure logger

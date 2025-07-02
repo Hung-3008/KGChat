@@ -9,12 +9,12 @@ import logging
 import time
 import uvicorn
 
-from backend.core.retrieval.query_analyzer import analyze_query, QueryIntent
-from backend.core.retrieval.keyword_extractor import extract_keywords
-from backend.core.retrieval.kg_query_processor import run_query
+from core.retrieval.query_analyzer import analyze_query, QueryIntent
+from core.retrieval.keyword_extractor import extract_keywords
+from core.retrieval.kg_query_processor import run_query
 
 # Import the ClientManager
-from backend.api.client_manager import ClientManager
+from api.client_manager import ClientManager
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -191,7 +191,7 @@ async def process_user_query(
                 query=request.query,
                 conversation_history=request.conversation_history,
                 clients = clients, 
-                grounding=True
+                grounding=False
             )
             max_retries = 0
             return result
@@ -213,8 +213,6 @@ async def process_user_query(
             except Exception as e:
                 continue
             
-
-        
 
 @app.get("/health")
 async def health_check():

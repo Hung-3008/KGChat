@@ -5,13 +5,13 @@ import time
 from typing import List, Dict, Any, Optional, Tuple
 from dotenv import load_dotenv
 
-from backend.db.neo4j_client import Neo4jClient
-from backend.db.vector_db import VectorDBClient
-from backend.llm.ollama_client import OllamaClient
-from backend.llm.gemini_client import GeminiClient
-from backend.core.pipeline.gemini.chunking import DocumentChunker
-from backend.core.pipeline.gemini.graph_extraction import extract_graph_elements_from_chunks
-from backend.utils.logging import get_logger
+from db.neo4j_client import Neo4jClient
+from db.vector_db import VectorDBClient
+from llm.ollama_client import OllamaClient
+from llm.gemini_client import GeminiClient
+from core.pipeline.gemini.chunking import DocumentChunker
+from core.pipeline.gemini.graph_extraction import extract_graph_elements_from_chunks
+from utils.logging import get_logger
 
 logger = get_logger(__name__)
 

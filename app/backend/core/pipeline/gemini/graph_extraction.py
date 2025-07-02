@@ -9,9 +9,9 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 
-from backend.llm.gemini_client import GeminiClient
-from backend.core.pipeline.gemini.prompts import GEMINI_ENTITY_EXTRACTION_PROMPT
-from backend.db.vector_db import VectorDBClient
+from llm.gemini_client import GeminiClient
+from core.pipeline.gemini.prompts import GEMINI_ENTITY_EXTRACTION_PROMPT
+from db.vector_db import VectorDBClient
 #from langchain_core.prompts import PromptTemplate
 from langchain_core.prompts import ChatPromptTemplate
 logger = logging.getLogger(__name__)

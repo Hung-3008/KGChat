@@ -6,10 +6,10 @@ import logging
 import uuid
 from typing import Dict, List, Any, Tuple, Optional
 
-from backend.llm.ollama_client import OllamaClient
-from backend.db.neo4j_client import Neo4jClient
-from backend.db.vector_db import VectorDBClient
-from backend.utils.logging import get_logger
+from llm.ollama_client import OllamaClient
+from db.neo4j_client import Neo4jClient
+from db.vector_db import VectorDBClient
+from utils.logging import get_logger
 
 logger = get_logger(__name__)
 

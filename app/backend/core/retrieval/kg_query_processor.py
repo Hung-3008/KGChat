@@ -1,42 +1,37 @@
 import os 
 import json
 from dotenv import load_dotenv
-from backend.llm.gemini_client import GeminiClient
-from backend.db.neo4j_client import Neo4jClient
-from backend.db.vector_db import VectorDBClient
-from backend.llm.ollama_client import OllamaClient
+from llm.gemini_client import GeminiClient
+from db.neo4j_client import Neo4jClient
+from db.vector_db import VectorDBClient
+from llm.ollama_client import OllamaClient
 from qdrant_client import QdrantClient
-from backend.core.retrieval.query_analyzer import analyze_query
-from backend.core.retrieval.keyword_extractor import extract_keywords
-from backend.core.retrieval.dual_level_retriever import retrieve_from_knowledge_graph, format_retrieval_results, evaluate_and_expand_entities, format_triplets_for_evaluation
+from core.retrieval.query_analyzer import analyze_query
+from core.retrieval.keyword_extractor import extract_keywords
+from core.retrieval.dual_level_retriever import retrieve_from_knowledge_graph, format_retrieval_results, evaluate_and_expand_entities, format_triplets_for_evaluation
 from typing import Dict, Any, List, Tuple
 import time
 load_dotenv()
 
 
-async def run_query(query: str, conversation_history: List[Dict[str, str]], clients: Dict[str, Any], grounding=False, language="English"):
+async def run_query(query: str, conversation_history: List[Dict[str, str]], clients: Dict[str, Any], grounding=False, language="Vietnamese"):
 
     time_start = time.time()
     # step 1: get intent, high_keywords, low_keywords
-    history = [
-        {
-            "role": "user",
-            "content": "Hello, I'd like to ask some questions about diabetes."
-        }
-    ]
+    history = conversation_history if conversation_history else []
     intent = await analyze_query(
         query=query,
         conversation_history=history,
         client=clients["gemini_client"]
     )
-    time.sleep(2)
+
 
     high_keywords, low_keywords = await extract_keywords(
         query=query,
         conversation_history=history,
         llm_client=clients["gemini_client"]
     )
-    time.sleep(2)
+
 
     # Step 2: Get relevant nodes and relationships from Neo4j
     kg_context = await retrieve_from_knowledge_graph(

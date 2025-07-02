@@ -5,7 +5,7 @@ from typing import List, Dict, Any, Optional, Tuple
 import asyncio
 
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from backend.utils.text_processing import count_tokens
+from utils.text_processing import count_tokens
 
 logger = logging.getLogger(__name__)
 

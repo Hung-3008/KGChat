@@ -7,8 +7,8 @@ import asyncio
 from tqdm import tqdm
 
 from qdrant_client import QdrantClient
-from backend.db.neo4j_client import Neo4jClient
-from backend.utils.logging import get_logger
+from db.neo4j_client import Neo4jClient
+from utils.logging import get_logger
 
 logger = get_logger(__name__)
 

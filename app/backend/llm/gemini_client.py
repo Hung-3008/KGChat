@@ -47,7 +47,6 @@ class GeminiClient:
         
         # Initialize the client
         self.client = genai.Client(api_key=self.api_key, **kwargs)
-        
 
     async def generate(
         self,
@@ -86,16 +85,25 @@ class GeminiClient:
                 generation_config["response_mime_type"] = "application/json"
                 generation_config["response_schema"] = list[format]
             
-            request_args = {
+            from google.genai import types
+            
+            content_config = types.GenerateContentConfig(
+                temperature=generation_config.get("temperature", 0.7) if generation_config else 0.7,
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+                response_mime_type=generation_config.get("response_mime_type") if generation_config else None,
+                response_schema=generation_config.get("response_schema") if generation_config else None
+            )
+            
+            config_args = {
                 "model": model,
                 "contents": contents if len(contents) > 1 else contents[0]["parts"][0]["text"],
-                "config": generation_config if generation_config else None,
+                "config": content_config
             }
             
             if stream:
-                request_args["stream"] = True
+                config_args["stream"] = True
                 
-            response = self.client.models.generate_content(**request_args)
+            response = self.client.models.generate_content(**config_args)
             
 
             if format:

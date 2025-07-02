@@ -13,7 +13,8 @@ from openpyxl.utils import get_column_letter
 from datetime import datetime
 from dotenv import load_dotenv
 import re
-from typing import Dict, Any
+from typing import Dict, Any, List
+import glob
 
 
 sys.path.append("./app")
@@ -58,7 +59,7 @@ class GeminiRateLimiter:
             if len(self.requests) >= self.max_requests:
                 # Calculate how long to wait
                 oldest_request = min(self.requests)
-                wait_time = 61 - (now - oldest_request)  # Wait until oldest request is > 60 seconds old
+                wait_time = 61 - (now - oldest_request)
                 if wait_time > 0:
                     logger.info(f"Rate limit approaching, waiting {wait_time:.1f} seconds...")
                     await asyncio.sleep(wait_time)
@@ -85,6 +86,7 @@ class GeminiKeyManager:
     def get_current_key(self) -> str:
         key_name = self.key_pattern.format(self.current_key_index)
         api_key = os.getenv(key_name)
+        #print(f"Using API key: {key_name} - {api_key is not None}")
         
         if not api_key:
             self.logger.warning(f"API key {key_name} not found in environment variables")
@@ -204,11 +206,61 @@ class ClientManager:
             await self.neo4j_client.close()
         self.initialized = False
 
+def load_csv_datasets(csv_paths: List[str]) -> pd.DataFrame:
+    """
+    Load and combine multiple CSV files into a single DataFrame
+    """
+    all_dataframes = []
+    
+    for csv_path in csv_paths:
+        if not os.path.exists(csv_path):
+            logger.warning(f"CSV file not found: {csv_path}")
+            continue
+            
+        try:
+            logger.info(f"Loading CSV file: {csv_path}")
+            df = pd.read_csv(csv_path)
+            
+            # Verify expected columns
+            expected_columns = ['question', 'answer']
+            if not all(col in df.columns for col in expected_columns):
+                logger.error(f"CSV file {csv_path} missing expected columns {expected_columns}")
+                logger.error(f"Found columns: {list(df.columns)}")
+                continue
+            
+            # Add source file info
+            df['source_file'] = os.path.basename(csv_path)
+            all_dataframes.append(df)
+            logger.info(f"Loaded {len(df)} questions from {csv_path}")
+            
+        except Exception as e:
+            logger.error(f"Error loading CSV file {csv_path}: {str(e)}")
+            continue
+    
+    if not all_dataframes:
+        raise ValueError("No valid CSV files could be loaded")
+    
+    # Combine all dataframes
+    combined_df = pd.concat(all_dataframes, ignore_index=True)
+    logger.info(f"Combined dataset: {len(combined_df)} total questions from {len(all_dataframes)} files")
+    
+    return combined_df
+
+
+
 async def translate_chinese_to_english(gemini_client, key_manager, text, max_retries=3):
+    """
+    Translate Chinese text to English using Gemini client
+    """
     translation_prompt = f"""
-    Please translate the following Chinese text to English. 
-    The text may contain medical or diabetes-related terminology.
-    Provide only the English translation without any additional explanation.
+    Please translate the following Chinese medical text to English. 
+    This is a multiple-choice question about diabetes or endocrinology.
+    
+    Instructions:
+    - Translate the question and all answer options accurately
+    - Maintain the structure (Question:, Option A:, Option B:, etc.)
+    - Use proper medical terminology
+    - Provide only the English translation without any additional explanation
     
     Chinese text:
     {text}
@@ -217,7 +269,7 @@ async def translate_chinese_to_english(gemini_client, key_manager, text, max_ret
     for attempt in range(max_retries):
         try:
             # Wait for rate limiting
-            await key_manager.rate_limiter.wait_if_needed()
+            # await key_manager.rate_limiter.wait_if_needed()
             
             logger.debug(f"Translating text (attempt {attempt + 1}/{max_retries})")
             
@@ -260,13 +312,21 @@ async def ask_question_direct(question, clients, key_manager, response_type="con
     Directly use backend services instead of API calls
     """
     guided_question = f"""
-    This is a multiple-choice question about diabetes. Please read the question carefully and select the most appropriate answer option (A, B, C, or D).
+    This is a medical question about diabetes or endocrinology. Please read the question carefully and provide your answer.
 
-    IMPORTANT INSTRUCTIONS:
-    - Provide ONLY the letter and text of your selected answer (e.g., "B) Family history of diabetes")
-    - Do NOT include any explanations, reasoning, or additional text
-    - Do NOT restate the question
-    - Just directly state which option is correct
+    QUESTION TYPES AND INSTRUCTIONS:
+    - Determine the type of question besed on the content
+    - For multiple-choice questions (A, B, C, D, E): Select the most appropriate option(s)
+    - For yes/no questions: Answer "Yes" or "No"
+    - For questions requiring multiple answers: List all correct options
+    - For open-ended questions: Provide a concise answer
+
+    RESPONSE FORMAT:
+    Please provide your response in the following format:
+    
+    ANSWER: [Your answer - option letter(s), yes/no, or brief response]
+    
+    EXPLANATION: [Brief explanation (1-2 sentences) justifying your answer choice]
 
     QUESTION:
     {question}
@@ -278,12 +338,11 @@ async def ask_question_direct(question, clients, key_manager, response_type="con
         try:
             logger.debug(f"Processing question (attempt {attempt + 1}/{max_retries})")
             
-            # Use the backend kg_query_processor directly
             result = await run_query(
                 query=guided_question,
                 conversation_history=conversation_history,
                 clients=clients,
-                grounding=False,  # Set to True if you want web grounding
+                grounding=False,
                 language="English"
             )
             
@@ -324,25 +383,41 @@ async def evaluate_answer(gemini_client, key_manager, question, correct_answer, 
     Evaluate if model's answer matches the correct answer
     """
     prompt = f"""
-    You are an evaluation system for multiple-choice answers. 
+    You are an evaluation system for cross-language medical question answers.
     
-    Question:
+    Context:
+    - The original question was in Chinese and has been translated to English
+    - The correct answer is in Chinese format
+    - The model's answer is in English
+    
+    Question (English translation):
     {question}
     
-    Correct answer: {correct_answer}
+    Correct answer (Chinese): {correct_answer}
     
-    Model's answer: {model_answer}
+    Model's answer (English): {model_answer}
     
-    Your task is to determine if the model's answer correctly identifies the same answer choice as the correct answer.
+    Your task is to determine if the model's English answer corresponds to the correct Chinese answer.
     
-    Rules:
-    - The model might not format its answer exactly like the correct answer
-    - The model might give additional explanations
-    - Focus on whether the model correctly identifies the same option (A, B, C, or D)
-    - Return 1 if the model's answer correctly identifies the same option as the correct answer
-    - Return 0 if the model's answer does not correctly identify the same option
+    EVALUATION RULES:
+    1. Extract the option letter from the Chinese correct answer (usually the first character: A, B, C, D, E)
+    2. Look for the same option letter in the model's English answer
+    3. Handle different formats:
+       - Chinese format: "A：选项内容" or "A: 选项内容"
+       - English format: "ANSWER: A" or "A)" or just "A"
+    4. Focus on the option letter match, not the content language
+    5. Be flexible with formatting - the model might include explanations
     
-    Do not provide explanations, just evaluate and return the binary result.
+    EXAMPLES:
+    - Chinese correct: "A：血浆皮质醇测定", Model: "ANSWER: A" → return 1
+    - Chinese correct: "E：促肾上腺皮质激素试验", Model: "The answer is E" → return 1  
+    - Chinese correct: "B：尿游离皮质醇", Model: "ANSWER: A" → return 0
+    - Chinese correct: "C：测定", Model: "C) This option is correct" → return 1
+    
+    IMPORTANT: Focus only on whether the option letters match, regardless of language differences.
+    
+    Return 1 if the option letters match, 0 if they don't match.
+    Do not provide explanations, just the binary evaluation result.
     """
     
     max_retries = 3
@@ -350,7 +425,7 @@ async def evaluate_answer(gemini_client, key_manager, question, correct_answer, 
     for attempt in range(max_retries):
         try:
             # Wait for rate limiting
-            await key_manager.rate_limiter.wait_if_needed()
+            # await key_manager.rate_limiter.wait_if_needed()
             
             response = await gemini_client.generate(
                 prompt=prompt,
@@ -396,37 +471,44 @@ def create_excel_with_formatting(df, output_path):
     incorrect_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
     
     # Adjust column widths
-    worksheet.column_dimensions['A'].width = 15  # question
-    worksheet.column_dimensions['B'].width = 50  # original_question (Chinese)
-    worksheet.column_dimensions['C'].width = 50  # translated_question (English)
-    worksheet.column_dimensions['D'].width = 25  # correct_answer
-    worksheet.column_dimensions['E'].width = 25  # model_answer
-    worksheet.column_dimensions['F'].width = 15  # is_correct
+    column_widths = {
+        'A': 15,  # source_file
+        'B': 60,  # original_question (Chinese)
+        'C': 60,  # translated_question (English)
+        'D': 30,  # correct_answer
+        'E': 30,  # model_answer
+        'F': 15   # is_correct
+    }
     
+    for col_letter, width in column_widths.items():
+        worksheet.column_dimensions[col_letter].width = width
+    
+    # Format headers
     for col_num, column_title in enumerate(df.columns, 1):
         cell = worksheet.cell(row=1, column=col_num)
         cell.fill = header_fill
         cell.font = header_font
         
     # Color code the is_correct column
-    is_correct_col = df.columns.get_loc('is_correct') + 1
-    for row_num, value in enumerate(df['is_correct'], 2):
-        cell = worksheet.cell(row=row_num, column=is_correct_col)
-        if value == 1:
-            cell.fill = correct_fill
-            cell.value = "1"
-        else:
-            cell.fill = incorrect_fill
-            cell.value = "0"
+    if 'is_correct' in df.columns:
+        is_correct_col = df.columns.get_loc('is_correct') + 1
+        for row_num, value in enumerate(df['is_correct'], 2):
+            cell = worksheet.cell(row=row_num, column=is_correct_col)
+            if value == 1:
+                cell.fill = correct_fill
+                cell.value = "1"
+            else:
+                cell.fill = incorrect_fill
+                cell.value = "0"
     
     writer.close()
     
     logger.info(f"Excel file created at {output_path} with formatting")
 
-async def process_dataset(dataset, clients, gemini_client, key_manager, num_samples=None, batch_size=100, save_prefix='diabetes_mc_results'):
+async def process_dataset(df, clients, gemini_client, key_manager, num_samples=None, batch_size=100, save_prefix='diabetes_mc_results'):
     results = []
     
-    total_examples = len(dataset['query'])  # Changed from 'input' to 'query'
+    total_examples = len(df)
     examples_to_process = min(total_examples, num_samples) if num_samples else total_examples
     
     logger.info(f"Starting processing of {examples_to_process} questions")
@@ -440,10 +522,14 @@ async def process_dataset(dataset, clients, gemini_client, key_manager, num_samp
     os.makedirs(batch_dir, exist_ok=True)
     
     for i in range(examples_to_process):
-        original_question = dataset['query'][i]  # Changed from 'input' to 'query'
-        correct_answer = dataset['response'][i]  # Changed from 'output' to 'response'
+        row = df.iloc[i]
+        original_question = row['question']
+        original_answer = row['answer']
+        source_file = row.get('source_file', 'unknown')
         
-        logger.info(f"Processing question {i+1}/{examples_to_process}")
+        logger.info(f"Processing question {i+1}/{examples_to_process} from {source_file}")
+        logger.debug(f"Original question: {original_question[:100]}...")
+        logger.debug(f"Original answer: {original_answer}")
         
         # Translate Chinese question to English
         logger.debug("Translating question from Chinese to English...")
@@ -467,14 +553,15 @@ async def process_dataset(dataset, clients, gemini_client, key_manager, num_samp
             gemini_client, 
             key_manager, 
             translated_question, 
-            correct_answer, 
+            original_answer, 
             model_answer
         )
         
         results.append({
-            'original_question': original_question,      # Chinese question
-            'translated_question': translated_question,  # English translation
-            'correct_answer': correct_answer,
+            'source_file': source_file,
+            'original_question': original_question,      
+            'translated_question': translated_question,  
+            'correct_answer': original_answer,           
             'model_answer': model_answer,
             'is_correct': is_correct
         })
@@ -487,19 +574,21 @@ async def process_dataset(dataset, clients, gemini_client, key_manager, num_samp
             
             create_excel_with_formatting(batch_df, batch_filename)
             logger.info(f"Saved batch {batch_number} with {len(batch_df)} questions to {batch_filename}")
-        
-        logger.debug("Waiting to respect rate limits...")
-        await asyncio.sleep(20)
     
     logger.info(f"Completed processing all {examples_to_process} questions")
     return pd.DataFrame(results)
 
 async def main():
-    logger.info("Starting evaluation process with direct backend integration and translation")
+    logger.info("Starting evaluation process with CSV input and Chinese-English translation")
     
     load_dotenv()
     
-    key_manager = GeminiKeyManager(current_key_index=4, max_keys=6)
+    csv_paths = [
+        "/home/hung/Documents/hung/code/KG_Hung/KGChat/eval/diabetica/ZhiCheng_MCQ_A1.csv",
+        "/home/hung/Documents/hung/code/KG_Hung/KGChat/eval/diabetica/ZhiCheng_MCQ_A2.csv"
+    ]
+    
+    key_manager = GeminiKeyManager(current_key_index=1, max_keys=6)
     client_manager = ClientManager()
     
     try:
@@ -513,24 +602,13 @@ async def main():
         gemini_client = GeminiClient(api_key=api_key, model_name="gemini-2.0-flash")
         logger.info(f"Initialized evaluation Gemini client with API key index {key_manager.current_key_index}")
         
-        arrow_file_path = "/home/hung/Documents/hung/code/KG_Hung/KGChat/eval/multiple_choice/diabetes_instruct_v8-train.arrow"
-        logger.info(f"Loading dataset from {arrow_file_path}")
-        
+        logger.info("Loading CSV datasets...")
         try:
-            dataset = Dataset.from_file(arrow_file_path)
-            dataset_dict = dataset.to_dict()
+            combined_df = load_csv_datasets(csv_paths)
+            logger.info(f"Dataset loaded successfully with {len(combined_df)} questions")
             
-            expected_keys = ['query', 'response']
-            actual_keys = list(dataset_dict.keys())
-            logger.info(f"Dataset keys found: {actual_keys}")
-            
-            if not all(key in actual_keys for key in expected_keys):
-                logger.error(f"Expected keys {expected_keys} but found {actual_keys}")
-                return
-            
-            logger.info(f"Dataset loaded successfully with {len(dataset_dict['query'])} questions")
         except Exception as e:
-            logger.error(f"Failed to load dataset: {str(e)}")
+            logger.error(f"Failed to load CSV datasets: {str(e)}")
             return
         
         now = datetime.now()
@@ -540,24 +618,24 @@ async def main():
         output_dir = f"eval/multiple_choice/{date_str}/{time_str}"
         os.makedirs(output_dir, exist_ok=True)
         
-        num_samples = 10 
+        num_samples = None  
         if num_samples:
-            logger.info(f"Will process {num_samples} samples")
+            logger.info(f"Will process {num_samples} samples for testing")
         else:
             logger.info("Processing all samples in the dataset")
         
         results_df = await process_dataset(
-            dataset=dataset_dict, 
+            df=combined_df, 
             clients=clients,
             gemini_client=gemini_client,
             key_manager=key_manager,
             num_samples=num_samples,
-            batch_size=10,  
-            save_prefix='diabetes_mc_results'
+            batch_size=50,
+            save_prefix='zhicheng_mcq_results'
         )
         
         # Create final Excel file with formatting
-        final_output_path = f"{output_dir}/diabetes_mc_results_complete.xlsx"
+        final_output_path = f"{output_dir}/zhicheng_mcq_results_complete.xlsx"
         create_excel_with_formatting(results_df, final_output_path)
         logger.info(f"Saved complete results to {final_output_path}")
         
@@ -566,9 +644,19 @@ async def main():
         correct_count = results_df['is_correct'].sum()
         accuracy = (correct_count / total_questions) * 100 if total_questions > 0 else 0
         
+        # Statistics by source file
+        source_stats = results_df.groupby('source_file').agg({
+            'is_correct': ['count', 'sum']
+        }).round(2)
+        source_stats.columns = ['Total', 'Correct']
+        source_stats['Accuracy'] = (source_stats['Correct'] / source_stats['Total'] * 100).round(2)
+        
         logger.info("\nResults Summary:")
         logger.info(f"Total questions processed: {total_questions}")
         logger.info(f"Correct answers: {correct_count} ({accuracy:.2f}%)")
+        logger.info("\nResults by source file:")
+        for source_file, stats in source_stats.iterrows():
+            logger.info(f"{source_file}: {stats['Correct']}/{stats['Total']} ({stats['Accuracy']:.1f}%)")
         
         # Create summary sheet
         summary_df = pd.DataFrame([{
@@ -576,12 +664,19 @@ async def main():
             'Correct Answers': correct_count,
             'Accuracy': f"{accuracy:.2f}%",
             'Date': pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
-            'Translation Enabled': True
+            'Translation Enabled': True,
+            'Input Format': 'CSV (Chinese MCQ)',
+            'Files Processed': len(csv_paths)
         }])
         
-        summary_file = f"{output_dir}/diabetes_mc_results_summary.xlsx"
+        summary_file = f"{output_dir}/zhicheng_mcq_results_summary.xlsx"
         summary_df.to_excel(summary_file, index=False)
         logger.info(f"Saved summary statistics to {summary_file}")
+        
+        # Save detailed source statistics
+        source_stats_file = f"{output_dir}/zhicheng_source_statistics.xlsx"
+        source_stats.to_excel(source_stats_file)
+        logger.info(f"Saved source statistics to {source_stats_file}")
         
     except Exception as e:
         logger.error(f"Error in main process: {str(e)}", exc_info=True)
